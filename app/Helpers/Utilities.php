@@ -40,9 +40,11 @@ class Utilities
      */
     public static function getScheduleNextRunDate(string $minute, string $hour, string $dayOfMonth, string $month, string $dayOfWeek): Carbon
     {
+        // LoomNode local patch: cron fields are wall-clock America/Chicago,
+        // result is returned in UTC exactly as before.
         return Carbon::instance((new CronExpression(
             sprintf('%s %s %s %s %s', $minute, $hour, $dayOfMonth, $month, $dayOfWeek)
-        ))->getNextRunDate(now('UTC')));
+        ))->getNextRunDate(now('America/Chicago')))->setTimezone('UTC');
     }
 
     public static function checked(string $name, mixed $default): string
