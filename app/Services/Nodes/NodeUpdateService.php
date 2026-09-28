@@ -40,6 +40,10 @@ class NodeUpdateService
             /** @var Node $updated */
             $updated = $node->replicate();
             $updated->exists = true;
+            // replicate() leaves the model's "original" at the class defaults ($attributes),
+            // not at the stored row. Without this, a value equal to its default (memory,
+            // disk or cpu set back to 0, public false...) is not dirty and is never saved.
+            $updated->syncOriginal();
             $data = array_merge($data, ['created_at' => $node->created_at, 'updated_at' => now()]);
             $updated->forceFill($data)->save();
             try {
