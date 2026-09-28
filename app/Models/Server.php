@@ -32,6 +32,7 @@ use Illuminate\Notifications\Notifiable;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Validation\ValidationException;
 use Psr\Http\Message\ResponseInterface;
 
 /**
@@ -215,6 +216,10 @@ class Server extends Model implements HasAvatar, Validatable
 
     protected static function booted(): void
     {
+        static::saving(function (self $server) {
+            $server->assertNodeHasCapacity();
+        });
+
         static::saved(function (self $server) {
             $subuser = $server->subusers()->where('user_id', $server->owner_id)->first();
             if ($subuser) {
@@ -222,6 +227,79 @@ class Server extends Model implements HasAvatar, Validatable
                 app(SubuserDeletionService::class)->handle($subuser, $server);
             }
         });
+    }
+
+    /**
+     * Refuse to save a server that doesn't fit on its node.
+     *
+     * Node::isViable() is only consulted by automatic deployment and transfers, so
+     * the admin create form, an API create with an explicit allocation, the admin
+     * edit form and PATCH .../build could all place or grow a server past the node's
+     * memory, disk and CPU limits. Checking here covers every path that writes a
+     * server row. The limits are the same as isViable(): limit * (1 + overallocate%),
+     * skipped when the limit is 0 or overallocate is negative.
+     *
+     * Only a create or a resource that grows is checked, so shrinking a server on a
+     * node that is already over (after its limits were lowered) still works. A node
+     * change is left to TransferServerService, which checks before any data moves;
+     * by the time node_id is written here the files are already on the new node.
+     *
+     * @throws ValidationException
+     */
+    public function assertNodeHasCapacity(): void
+    {
+        if ($this->exists && ($this->isDirty('node_id') || !$this->isDirty(['memory', 'disk', 'cpu']))) {
+            return;
+        }
+
+        // Locks the node row so two creates on one node can't both pass against the
+        // same sums. The lock lasts only inside a transaction; ServerCreationService
+        // opens one, and a save outside one gets the check without the lock.
+        $node = Node::query()->whereKey($this->node_id)->lockForUpdate()->first();
+        if (!$node) {
+            return;
+        }
+
+        $units = ['memory' => ' MiB', 'disk' => ' MiB', 'cpu' => '%'];
+        $errors = [];
+        foreach ($units as $resource => $unit) {
+            $limit = (int) $node->{$resource};
+            $overallocate = (int) $node->{$resource . '_overallocate'};
+            if ($limit <= 0 || $overallocate < 0) {
+                continue;
+            }
+
+            $requested = (int) $this->{$resource};
+            $original = $this->exists ? (int) $this->getOriginal($resource) : null;
+
+            // 0 means unlimited, which a limited node can never have room for.
+            if ($requested <= 0) {
+                if ($original !== 0) {
+                    $errors[$resource] = "Node {$node->name} limits $resource, so this server needs a $resource limit (0 means unlimited).";
+                }
+
+                continue;
+            }
+
+            if ($original !== null && $original > 0 && $requested <= $original) {
+                continue;
+            }
+
+            $used = (int) Server::query()
+                ->where('node_id', $node->id)
+                ->when($this->exists, fn (Builder $query) => $query->whereKeyNot($this->getKey()))
+                ->sum($resource);
+            $capacity = (int) floor($limit * (1 + $overallocate / 100));
+
+            if ($used + $requested > $capacity) {
+                $room = max(0, $capacity - $used);
+                $errors[$resource] = "Node {$node->name} can give this server at most {$room}{$unit} of $resource ({$capacity}{$unit} total); it asks for {$requested}{$unit}.";
+            }
+        }
+
+        if ($errors) {
+            throw ValidationException::withMessages($errors);
+        }
     }
 
     /**

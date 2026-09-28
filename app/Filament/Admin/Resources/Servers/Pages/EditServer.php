@@ -57,10 +57,13 @@ use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Components\Utilities\Set;
 use Filament\Schemas\Schema;
 use Filament\Support\Enums\Alignment;
+use Filament\Support\Exceptions\Halt;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Arr;
 use Illuminate\Support\HtmlString;
+use Illuminate\Validation\ValidationException;
 use LogicException;
 use Random\RandomException;
 
@@ -1052,6 +1055,24 @@ class EditServer extends EditRecord
         unset($data['docker'], $data['status'], $data['allocation_id']);
 
         return $data;
+    }
+
+    protected function handleRecordUpdate(Model $record, array $data): Model
+    {
+        // Server::assertNodeHasCapacity() keys its errors by column, but this form's
+        // fields live under data.*, so without this the save is refused silently.
+        try {
+            return parent::handleRecordUpdate($record, $data);
+        } catch (ValidationException $exception) {
+            Notification::make()
+                ->title('Server does not fit on its node')
+                ->body(implode(' ', Arr::flatten($exception->errors())))
+                ->danger()
+                ->persistent()
+                ->send();
+
+            throw (new Halt())->rollBackDatabaseTransaction();
+        }
     }
 
     protected function afterSave(): void
