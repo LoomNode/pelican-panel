@@ -17,6 +17,7 @@ use Dedoc\Scramble\Attributes\Group;
 use Dedoc\Scramble\Attributes\Response as ResponseDoc;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Response;
+use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Illuminate\Support\Arr;
 use Throwable;
 
@@ -71,6 +72,31 @@ class ServerManagementController extends ApplicationApiController
      * @throws DisplayException
      * @throws DataValidationException
      */
+    /**
+     * Power a server
+     *
+     * Sends a power signal (start, stop, restart or kill) to the server, like the
+     * Client API's power endpoint, so an integration that manages servers with an
+     * application key can start one it has just unsuspended without also holding a
+     * user's client key. A suspended server can't be powered.
+     *
+     * @throws ConnectionException
+     */
+    public function power(ServerWriteRequest $request, Server $server): Response
+    {
+        $signal = $request->validate([
+            'signal' => 'required|string|in:start,stop,restart,kill',
+        ])['signal'];
+
+        if ($server->isSuspended()) {
+            throw new ConflictHttpException('Cannot send a power signal to a suspended server.');
+        }
+
+        $this->daemonServerRepository->setServer($server)->power($signal);
+
+        return $this->returnNoContent();
+    }
+
     public function reinstall(ServerWriteRequest $request, Server $server): Response
     {
         $this->reinstallServerService->handle($server);
