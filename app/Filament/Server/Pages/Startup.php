@@ -48,7 +48,7 @@ class Startup extends ServerFormPage
                     ->readOnly()
                     ->visible(fn (Server $server) => !in_array($server->startup, $server->egg->startup_commands))
                     ->formatStateUsing(fn () => 'Custom Startup')
-                    ->hintAction(PreviewStartupAction::make()),
+                    ->hintAction(PreviewStartupAction::make()->visible(fn () => user()?->isAdmin())),
                 Select::make('startup_select')
                     ->label(trans('server/startup.command'))
                     ->live()
@@ -78,7 +78,7 @@ class Startup extends ServerFormPage
                     })
                     ->options(fn (Server $server) => array_flip($server->egg->startup_commands))
                     ->selectablePlaceholder(false)
-                    ->hintAction(PreviewStartupAction::make()),
+                    ->hintAction(PreviewStartupAction::make()->visible(fn () => user()?->isAdmin())),
                 TextInput::make('custom_image')
                     ->label(trans('server/startup.docker_image'))
                     ->readOnly()
@@ -111,11 +111,13 @@ class Startup extends ServerFormPage
 
                         return array_flip($images);
                     }),
+                // The start command is plumbing (and on some eggs a long one): admins only.
                 Textarea::make('startup')
                     ->hiddenLabel()
                     ->columnSpanFull()
                     ->autosize()
-                    ->readOnly(),
+                    ->readOnly()
+                    ->visible(fn () => user()?->isAdmin()),
                 Section::make(trans('server/startup.variables'))
                     ->columnSpanFull()
                     ->schema([
