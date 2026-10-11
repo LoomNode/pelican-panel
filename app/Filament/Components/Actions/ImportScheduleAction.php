@@ -53,7 +53,10 @@ class ImportScheduleAction extends Action
                                 ->storeFiles(false)
                                 ->multiple(true),
                         ]),
+                    // The Panel itself fetches the URL, so on a hosted Panel a customer could
+                    // point it at internal addresses. Admins only; file upload stays for all.
                     Tab::make('url')
+                        ->visible(fn () => user()?->isAdmin())
                         ->label(trans('server/schedule.import_action.url'))
                         ->icon(TablerIcon::WorldUpload)
                         ->schema([
@@ -79,7 +82,9 @@ class ImportScheduleAction extends Action
         ]);
 
         $this->action(function (array $data, ScheduleImporterService $service) use ($server) {
-            $schedules = array_merge(collect($data['urls'])->flatten()->whereNotNull()->unique()->all(), Arr::wrap($data['files']));
+            // Refused here too, not just hidden: a crafted request could still send urls.
+            $urls = user()?->isAdmin() ? collect($data['urls'] ?? [])->flatten()->whereNotNull()->unique()->all() : [];
+            $schedules = array_merge($urls, Arr::wrap($data['files'] ?? []));
             if (empty($schedules)) {
                 return;
             }
