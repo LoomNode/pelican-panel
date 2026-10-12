@@ -171,7 +171,9 @@ class BackupResource extends Resource
                         ->icon(TablerIcon::Download)
                         ->authorize(fn () => user()?->can(SubuserPermission::BackupDownload, $server))
                         ->url(fn (DownloadLinkService $downloadLinkService, Backup $backup) => $downloadLinkService->handle($backup, user()), true)
-                        ->visible(fn (Backup $backup) => $backup->status === BackupStatus::Successful),
+                        // Download links point at the backup store's LAN address, which customers
+                        // can't reach; they restore here and copy their files over SFTP. Admins only.
+                        ->visible(fn (Backup $backup) => $backup->status === BackupStatus::Successful && user()?->isAdmin()),
                     Action::make('exclude_restore')
                         ->label(trans('server/backup.actions.restore.title'))
                         ->iconSize(IconSize::Large)
