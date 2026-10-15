@@ -242,7 +242,8 @@ class EditProfile extends BaseEditProfile
             Tab::make('passkeys')
                 ->label(trans('profile.tabs.passkeys'))
                 ->icon(TablerIcon::Fingerprint)
-                ->hidden(fn () => !$this->request->isSecure())
+                // Admins only, like the passkey routes (config/passkeys.php).
+                ->hidden(fn () => !$this->request->isSecure() || !user()?->isAdmin())
                 ->schema([
                     Section::make(trans('profile.tabs.passkeys'))
                         ->description(trans('passkeys.description'))

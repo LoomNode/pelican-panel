@@ -3,6 +3,7 @@
 use App\Helpers\PasskeyOrigin;
 use App\Http\Middleware\AddPasskeyErrorMessage;
 use App\Http\Middleware\AllowPasskeyOrigin;
+use App\Http\Middleware\PasskeyManagementAdminsOnly;
 
 $appOrigin = PasskeyOrigin::normalize(config('app.url')) ?? 'http://localhost';
 
@@ -27,5 +28,9 @@ return [
     )),
 
     'middleware' => ['web', AddPasskeyErrorMessage::class, AllowPasskeyOrigin::class],
-    'management_middleware' => ['auth'],
+    // Adding and removing passkeys in the profile is for admins only: customers sign in
+    // with the passkey they made on the site that sells the servers, which the Application
+    // API copies here (UserSignInController). One made here would sit beside it on their
+    // phone under the same domain and fail on that site.
+    'management_middleware' => ['auth', PasskeyManagementAdminsOnly::class],
 ];
