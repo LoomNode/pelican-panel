@@ -23,6 +23,12 @@ Route::prefix('/users')->group(function () {
     Route::patch('/{user:id}/roles/remove', [Application\Users\UserController::class, 'removeRoles']);
 
     Route::delete('/{user:id}', [Application\Users\UserController::class, 'delete']);
+
+    Route::post('/{user:id}/sign-in-link', [Application\Users\UserSignInController::class, 'link'])->name('api.application.users.sign-in-link');
+    Route::put('/{user:id}/passkeys/{credentialId}', [Application\Users\UserSignInController::class, 'storePasskey'])
+        ->where('credentialId', '[A-Za-z0-9_-]+')->name('api.application.users.passkeys.store');
+    Route::delete('/{user:id}/passkeys/{credentialId}', [Application\Users\UserSignInController::class, 'deletePasskey'])
+        ->where('credentialId', '[A-Za-z0-9_-]+')->name('api.application.users.passkeys.delete');
 });
 
 /*
