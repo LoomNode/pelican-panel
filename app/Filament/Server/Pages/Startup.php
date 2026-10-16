@@ -43,16 +43,18 @@ class Startup extends ServerFormPage
             ->components([
                 Hidden::make('previewing')
                     ->default(false),
+                // The start command is plumbing: customers see only their game settings (admins
+                // see both of these as before). Display only, like the command box below.
                 TextInput::make('custom_startup')
                     ->label(trans('server/startup.command'))
                     ->readOnly()
-                    ->visible(fn (Server $server) => !in_array($server->startup, $server->egg->startup_commands))
+                    ->visible(fn (Server $server) => user()?->isAdmin() && !in_array($server->startup, $server->egg->startup_commands))
                     ->formatStateUsing(fn () => 'Custom Startup')
                     ->hintAction(PreviewStartupAction::make()->visible(fn () => user()?->isAdmin())),
                 Select::make('startup_select')
                     ->label(trans('server/startup.command'))
                     ->live()
-                    ->visible(fn (Server $server) => in_array($server->startup, $server->egg->startup_commands))
+                    ->visible(fn (Server $server) => user()?->isAdmin() && in_array($server->startup, $server->egg->startup_commands))
                     ->disabled(fn (Server $server) => !user()?->can(SubuserPermission::StartupUpdate, $server))
                     ->formatStateUsing(fn (Server $server) => $server->startup)
                     ->afterStateUpdated(function ($state, Server $server, Set $set) {
