@@ -45,9 +45,11 @@ class StartupVariable extends Field
 
         $this->label(fn (StartupVariable $component) => $component->getVariableName());
 
-        $this->prefix(fn (StartupVariable $component) => '{{' . $component->getVariableEnv() . '}}');
+        // The variable's env name and its validation rules are for admins: a customer sees
+        // the setting's name, its box and its description.
+        $this->prefix(fn (StartupVariable $component) => user()?->isAdmin() ? '{{' . $component->getVariableEnv() . '}}' : null);
 
-        $this->hintIcon(TablerIcon::Code, fn (StartupVariable $component) => implode('|', $component->getVariableRules()));
+        $this->hintIcon(fn () => user()?->isAdmin() ? TablerIcon::Code : null, fn (StartupVariable $component) => implode('|', $component->getVariableRules()));
 
         $this->helperText(fn (StartupVariable $component) => $component->getVariableDesc());
 
