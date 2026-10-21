@@ -43,18 +43,18 @@ class Startup extends ServerFormPage
             ->components([
                 Hidden::make('previewing')
                     ->default(false),
-                // The start command is plumbing: customers see only their game settings (admins
-                // see both of these as before). Display only, like the command box below.
+                // Game Settings shows only the game's settings, to admins too (Kyle, 2026-10-21): the
+                // start command and the image are plumbing, edited in the admin area (Servers > Edit).
                 TextInput::make('custom_startup')
                     ->label(trans('server/startup.command'))
                     ->readOnly()
-                    ->visible(fn (Server $server) => user()?->isAdmin() && !in_array($server->startup, $server->egg->startup_commands))
+                    ->hidden()
                     ->formatStateUsing(fn () => 'Custom Startup')
                     ->hintAction(PreviewStartupAction::make()->visible(fn () => user()?->isAdmin())),
                 Select::make('startup_select')
                     ->label(trans('server/startup.command'))
                     ->live()
-                    ->visible(fn (Server $server) => user()?->isAdmin() && in_array($server->startup, $server->egg->startup_commands))
+                    ->hidden()
                     ->disabled(fn (Server $server) => !user()?->can(SubuserPermission::StartupUpdate, $server))
                     ->formatStateUsing(fn (Server $server) => $server->startup)
                     ->afterStateUpdated(function ($state, Server $server, Set $set) {
@@ -84,12 +84,13 @@ class Startup extends ServerFormPage
                 TextInput::make('custom_image')
                     ->label(trans('server/startup.docker_image'))
                     ->readOnly()
-                    ->visible(fn (Server $server) => !in_array($server->image, $server->egg->docker_images))
+                    ->hidden()
                     ->formatStateUsing(fn (Server $server) => $server->image),
                 Select::make('image')
                     ->label(trans('server/startup.docker_image'))
                     ->live()
-                    ->visible(fn (Server $server) => in_array($server->image, $server->egg->docker_images))
+                    // Only a game with a choice of images shows the picker (Minecraft's Java versions).
+                    ->visible(fn (Server $server) => count($server->egg->docker_images) > 1 && in_array($server->image, $server->egg->docker_images))
                     ->disabled(fn (Server $server) => !user()?->can(SubuserPermission::StartupDockerImage, $server))
                     ->afterStateUpdated(function ($state, Server $server) {
                         abort_unless(user()?->can(SubuserPermission::StartupDockerImage, $server), 403);
@@ -113,13 +114,12 @@ class Startup extends ServerFormPage
 
                         return array_flip($images);
                     }),
-                // The start command is plumbing (and on some eggs a long one): admins only.
                 Textarea::make('startup')
                     ->hiddenLabel()
                     ->columnSpanFull()
                     ->autosize()
                     ->readOnly()
-                    ->visible(fn () => user()?->isAdmin()),
+                    ->hidden(),
                 Section::make(trans('server/startup.variables'))
                     ->columnSpanFull()
                     ->schema([
