@@ -24,6 +24,8 @@
         ])"
     >
         @if ($type === \App\Enums\StartupVariableType::Select)
+            {{-- A dropdown saves the moment a choice is picked, not on blur: picking one and then
+                 going to another page never left the box, so the choice was lost (LoomNode, 2026-10-22). --}}
             <x-filament::input.select
                 :id="$getId()"
                 :required="$isRequired"
@@ -31,7 +33,7 @@
                 :attributes="
                     $getExtraInputAttributeBag()
                         ->merge([
-                            $applyStateBindingModifiers('wire:model') => $statePath,
+                            str_replace('.blur', '', $applyStateBindingModifiers('wire:model')) => $statePath,
                         ], escape: false)
                 "
             >
