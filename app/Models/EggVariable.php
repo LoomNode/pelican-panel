@@ -119,6 +119,26 @@ class EggVariable extends Model implements Validatable
         return in_array('required', $this->rules);
     }
 
+    /**
+     * A variable that holds a secret: a password, token or key (STEAM_ACC and GSLT are GSL tokens).
+     * PASS counts only as a whole word part (RCON_PASS, SRCDS_BETAPASS), so VH_PASSIVEMOBS doesn't;
+     * PW/PWD likewise (ADMIN_PW). KEY counts at the end of a word part (API_KEY, LICENSEKEY).
+     */
+    public static function isSecret(string $envVariable): bool
+    {
+        return (bool) preg_match('/PASSWORD|PASSWD|PASSPHRASE|(^|_)[A-Z]*PASS($|_)|(^|_)PWD?($|_)|SECRET|TOKEN|GSLT|WEBHOOK|KEY($|_)|^STEAM_ACC$/i', $envVariable);
+    }
+
+    /**
+     * A value as the activity log keeps it. The log is shown to everyone who can see the
+     * server's activity and sent to webhooks, so a secret is kept only as set or empty
+     * (LoomNode, 2026-10-22).
+     */
+    public static function forActivity(string $envVariable, ?string $value): ?string
+    {
+        return static::isSecret($envVariable) && $value !== null && $value !== '' ? '******' : $value;
+    }
+
     public function egg(): HasOne
     {
         return $this->hasOne(Egg::class);
