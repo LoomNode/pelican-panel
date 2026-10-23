@@ -7,6 +7,7 @@ use App\Facades\Activity;
 use App\Http\Controllers\Api\Client\ClientApiController;
 use App\Http\Requests\Api\Client\Servers\Startup\GetStartupRequest;
 use App\Http\Requests\Api\Client\Servers\Startup\UpdateStartupVariableRequest;
+use App\Models\EggVariable;
 use App\Models\Server;
 use App\Models\ServerVariable;
 use App\Services\Servers\StartupCommandService;
@@ -90,8 +91,8 @@ class StartupController extends ClientApiController
                 ->subject($variable)
                 ->property([
                     'variable' => $variable->env_variable,
-                    'old' => $original,
-                    'new' => $request->input('value') ?? '',
+                    'old' => EggVariable::forActivity($variable->env_variable, $original),
+                    'new' => EggVariable::forActivity($variable->env_variable, $request->input('value') ?? ''),
                 ])
                 ->log();
         }

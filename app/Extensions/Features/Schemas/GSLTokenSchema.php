@@ -6,6 +6,7 @@ use App\Enums\SubuserPermission;
 use App\Enums\TablerIcon;
 use App\Extensions\Features\FeatureSchemaInterface;
 use App\Facades\Activity;
+use App\Models\EggVariable;
 use App\Models\Server;
 use App\Models\ServerVariable;
 use App\Models\User;
@@ -100,8 +101,8 @@ class GSLTokenSchema implements FeatureSchemaInterface
                         Activity::event('server:startup.edit')
                             ->property([
                                 'variable' => $serverVariable->variable->env_variable,
-                                'old' => $original,
-                                'new' => $new,
+                                'old' => EggVariable::forActivity($serverVariable->variable->env_variable, $original),
+                                'new' => EggVariable::forActivity($serverVariable->variable->env_variable, $new),
                             ])
                             ->log();
                     }

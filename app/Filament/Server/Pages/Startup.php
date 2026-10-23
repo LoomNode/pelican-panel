@@ -7,6 +7,7 @@ use App\Enums\TablerIcon;
 use App\Facades\Activity;
 use App\Filament\Components\Actions\PreviewStartupAction;
 use App\Filament\Components\Forms\Fields\StartupVariable;
+use App\Models\EggVariable;
 use App\Models\Server;
 use App\Models\ServerVariable;
 use BackedEnum;
@@ -196,8 +197,8 @@ class Startup extends ServerFormPage
                 Activity::event('server:startup.edit')
                     ->property([
                         'variable' => $serverVariable->variable->env_variable,
-                        'old' => $original,
-                        'new' => $state,
+                        'old' => EggVariable::forActivity($serverVariable->variable->env_variable, $original),
+                        'new' => EggVariable::forActivity($serverVariable->variable->env_variable, $state),
                     ])
                     ->log();
             }
