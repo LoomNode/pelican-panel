@@ -79,6 +79,10 @@
                         ->merge($getExtraAlpineAttributes(), escape: false)
                         ->merge([
                             $applyStateBindingModifiers('wire:model') => $statePath,
+                            // Livewire's page links cancel the mouse-down, so focus never left this box and
+                            // the typed value was lost on the way to Console; let go of focus first, which
+                            // saves it (LoomNode, 2026-10-23).
+                            'x-on:mousedown.document.capture' => 'if (document.activeElement === $el && $event.target !== $el) $el.blur()',
                         ], escape: false)
                 "
             />
