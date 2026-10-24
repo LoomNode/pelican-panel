@@ -17,8 +17,8 @@ use Dedoc\Scramble\Attributes\Group;
 use Dedoc\Scramble\Attributes\Response as ResponseDoc;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Response;
-use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Illuminate\Support\Arr;
+use Symfony\Component\HttpKernel\Exception\ConflictHttpException;
 use Throwable;
 
 #[Group('Server', weight: 4)]
@@ -72,6 +72,13 @@ class ServerManagementController extends ApplicationApiController
      * @throws DisplayException
      * @throws DataValidationException
      */
+    public function reinstall(ServerWriteRequest $request, Server $server): Response
+    {
+        $this->reinstallServerService->handle($server);
+
+        return $this->returnNoContent();
+    }
+
     /**
      * Power a server
      *
@@ -93,13 +100,6 @@ class ServerManagementController extends ApplicationApiController
         }
 
         $this->daemonServerRepository->setServer($server)->power($signal);
-
-        return $this->returnNoContent();
-    }
-
-    public function reinstall(ServerWriteRequest $request, Server $server): Response
-    {
-        $this->reinstallServerService->handle($server);
 
         return $this->returnNoContent();
     }
