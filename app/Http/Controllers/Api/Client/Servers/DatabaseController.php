@@ -60,7 +60,7 @@ class DatabaseController extends ClientApiController
     public function store(StoreDatabaseRequest $request, Server $server): array
     {
         $database = Activity::event('server:database.create')->transaction(function ($log) use ($request, $server) {
-            $server->databases()->lockForUpdate()->get(['id']);
+            $server->databases()->lockForUpdate()->count();
 
             $database = $this->deployDatabaseService->handle($server, $request->validated());
 
