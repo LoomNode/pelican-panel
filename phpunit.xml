@@ -28,6 +28,7 @@
         <env name="DB_DATABASE" value="testing.sqlite"/>
         <env name="GUZZLE_CONNECT_TIMEOUT" value="1"/>
         <env name="MAIL_MAILER" value="array"/>
+        <env name="PANEL_ENFORCE_NODE_CAPACITY" value="false"/>
         <env name="PULSE_ENABLED" value="false"/>
         <env name="QUEUE_CONNECTION" value="sync"/>
         <env name="SESSION_DRIVER" value="array"/>

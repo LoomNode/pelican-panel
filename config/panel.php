@@ -66,6 +66,10 @@ return [
 
     'use_binary_prefix' => env('PANEL_USE_BINARY_PREFIX', true),
 
+    // LoomNode: refuse a server create or resize that would put a node past its memory, disk or
+    // CPU limit (Server::assertNodeHasCapacity). Off in the test suite, whose factories don't fit.
+    'enforce_node_capacity' => env('PANEL_ENFORCE_NODE_CAPACITY', true),
+
     'editable_server_descriptions' => env('PANEL_EDITABLE_SERVER_DESCRIPTIONS', true),
 
     'api' => [
