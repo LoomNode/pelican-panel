@@ -30,6 +30,10 @@ return [
         'schedules' => [
             // The total number of tasks that can exist for any given schedule at once.
             'per_schedule_task_limit' => env('PANEL_PER_SCHEDULE_TASK_LIMIT', 10),
+
+            // Every schedule runs in this timezone, whoever creates or edits it (LoomNode: one wall
+            // clock for all servers, so nightly backups and restarts stay at night).
+            'timezone' => env('PANEL_SCHEDULE_TIMEZONE', 'America/Chicago'),
         ],
 
         'allocations' => [

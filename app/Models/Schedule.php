@@ -63,6 +63,31 @@ class Schedule extends Model implements Validatable
     use HasValidation;
 
     /**
+     * The timezone every schedule runs in (config panel.client_features.schedules.timezone).
+     */
+    public static function panelTimezone(): string
+    {
+        return (string) config('panel.client_features.schedules.timezone') ?: 'UTC';
+    }
+
+    protected static function booted(): void
+    {
+        // Whatever path saves a schedule (Panel pages, Client API, import), it runs in the panel
+        // timezone; if it arrived with another one, its next run is worked out again.
+        static::saving(function (Schedule $schedule) {
+            if ($schedule->timezone !== static::panelTimezone()) {
+                $schedule->timezone = static::panelTimezone();
+
+                try {
+                    $schedule->next_run_at = Utilities::getScheduleNextRunDate($schedule->cron_minute, $schedule->cron_hour, $schedule->cron_day_of_month, $schedule->cron_month, $schedule->cron_day_of_week, $schedule->timezone);
+                } catch (Exception) {
+                    // An invalid cron is the caller's to report; keep whatever next run it set.
+                }
+            }
+        });
+    }
+
+    /**
      * The resource name for this model when it is transformed into an
      * API representation using fractal.
      */

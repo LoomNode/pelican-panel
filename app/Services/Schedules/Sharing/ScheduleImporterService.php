@@ -34,7 +34,7 @@ class ScheduleImporterService
             $dayOfMonth = Arr::get($parsed, 'cron_day_of_month', '*');
             $month = Arr::get($parsed, 'cron_month', '*');
             $dayOfWeek = Arr::get($parsed, 'cron_day_of_week', '*');
-            $timezone = Arr::get($parsed, 'timezone') ?? 'UTC';
+            $timezone = Schedule::panelTimezone();
 
             $schedule = Schedule::create([
                 'server_id' => $server->id,

@@ -49,10 +49,12 @@ class UpdateServerScheduleTest extends ClientApiIntegrationTestCase
     }
 
     /**
-     * Test that updating a schedule evaluates the cron in the schedule's timezone.
+     * Test that updating a schedule evaluates the cron in the panel timezone, which every schedule
+     * runs in (LoomNode: panel.client_features.schedules.timezone), whatever it was made with.
      */
     public function test_next_run_uses_schedule_timezone(): void
     {
+        config()->set('panel.client_features.schedules.timezone', 'America/Chicago');
         [$user, $server] = $this->generateTestAccount();
 
         /** @var Schedule $schedule */
@@ -63,9 +65,9 @@ class UpdateServerScheduleTest extends ClientApiIntegrationTestCase
             ->postJson("/api/client/servers/{$server->uuid}/schedules/{$schedule->id}", $data)
             ->assertOk();
 
-        $nextRun = $schedule->refresh()->next_run_at->timezone('America/New_York');
-
-        $this->assertSame('03:00', $nextRun->format('H:i'));
+        $schedule->refresh();
+        $this->assertSame('America/Chicago', $schedule->timezone);
+        $this->assertSame('03:00', $schedule->next_run_at->timezone('America/Chicago')->format('H:i'));
     }
 
     /**

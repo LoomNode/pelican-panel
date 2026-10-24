@@ -75,7 +75,8 @@ class ScheduleController extends ClientApiController
             'cron_minute' => $request->input('minute'),
             'is_active' => (bool) $request->input('is_active'),
             'only_when_online' => (bool) $request->input('only_when_online'),
-            'next_run_at' => $this->getNextRunAt($request),
+            'timezone' => Schedule::panelTimezone(),
+            'next_run_at' => $this->getNextRunAt($request, Schedule::panelTimezone()),
         ]);
 
         Activity::event('server:schedule.create')
@@ -129,7 +130,7 @@ class ScheduleController extends ClientApiController
             'cron_minute' => $request->input('minute'),
             'is_active' => $active,
             'only_when_online' => (bool) $request->input('only_when_online'),
-            'next_run_at' => $this->getNextRunAt($request, $schedule->timezone),
+            'next_run_at' => $this->getNextRunAt($request, Schedule::panelTimezone()),
         ];
 
         // Toggle the processing state of the scheduled task when it is enabled or disabled so that an
