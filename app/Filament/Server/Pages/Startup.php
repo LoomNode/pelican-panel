@@ -159,6 +159,8 @@ class Startup extends ServerFormPage
     public function update(null|string|bool $state, ServerVariable $serverVariable): void
     {
         abort_unless(user()?->can(SubuserPermission::StartupUpdate, $this->getRecord()), 403);
+        abort_unless($serverVariable->server_id === $this->getRecord()->id, 403);
+        abort_unless($serverVariable->variable->user_viewable, 403);
 
         if (!$serverVariable->variable->user_editable) {
             return;

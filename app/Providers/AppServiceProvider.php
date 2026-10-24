@@ -10,9 +10,7 @@ use App\Checks\NodeVersionsCheck;
 use App\Checks\PanelVersionCheck;
 use App\Checks\ScheduleCheck;
 use App\Checks\UsedDiskSpaceCheck;
-use App\Extensions\Dedoc\Scramble\FractalResponseTypeInfer;
-use App\Extensions\Dedoc\Scramble\TransformerFactoryTypeInfer;
-use App\Extensions\Dedoc\Scramble\TransformerModelBindingExtension;
+use App\Extensions\Dedoc\Scramble\PanelResponseTypeInfer;
 use App\Http\Responses\LoginResponse;
 use App\Models\Allocation;
 use App\Models\ApiKey;
@@ -43,6 +41,7 @@ use Illuminate\Support\ServiceProvider;
 use Illuminate\Support\Str;
 use Laravel\Passkeys\Passkeys;
 use Laravel\Sanctum\Sanctum;
+use Spatie\Health\Checks\Checks\QueueCheck;
 use Spatie\Health\Facades\Health;
 
 class AppServiceProvider extends ServiceProvider
@@ -65,21 +64,6 @@ class AppServiceProvider extends ServiceProvider
         if ($app->runningInConsole() && empty(config('app.key'))) {
             $config->set('app.key', '');
         }
-
-        Relation::enforceMorphMap([
-            'allocation' => Allocation::class,
-            'api_key' => ApiKey::class,
-            'backup' => Backup::class,
-            'database' => Database::class,
-            'egg' => Egg::class,
-            'egg_variable' => EggVariable::class,
-            'schedule' => Schedule::class,
-            'server' => Server::class,
-            'ssh_key' => UserSSHKey::class,
-            'task' => Task::class,
-            'user' => User::class,
-            'node' => Node::class,
-        ]);
 
         Http::macro(
             'daemon',
@@ -110,6 +94,7 @@ class AppServiceProvider extends ServiceProvider
                 EnvironmentCheck::new(),
                 CacheCheck::new(),
                 DatabaseCheck::new(),
+                QueueCheck::new(),
                 ScheduleCheck::new(),
                 UsedDiskSpaceCheck::new(),
                 PanelVersionCheck::new(),
@@ -121,8 +106,10 @@ class AppServiceProvider extends ServiceProvider
 
         AboutCommand::add('Pelican', [
             'Panel Version' => $versionService->currentPanelVersion(),
-            'Latest Version' => $versionService->latestPanelVersion(),
-            'Up-to-Date' => $versionService->isLatestPanel() ? '<fg=green;options=bold>Yes</>' : '<fg=red;options=bold>No</>',
+            'Latest Version' => $versionService->latestPanelVersion() ?? 'Unknown',
+            'Up-to-Date' => is_null($versionService->latestPanelVersion())
+                ? '<fg=yellow;options=bold>Unknown</>'
+                : ($versionService->isLatestPanel() ? '<fg=green;options=bold>Yes</>' : '<fg=red;options=bold>No</>'),
         ]);
 
         AboutCommand::add('Environment', 'Installation Directory', base_path());
@@ -135,15 +122,30 @@ class AppServiceProvider extends ServiceProvider
     {
         $this->app->bind(LoginResponseContract::class, LoginResponse::class);
 
+        // Registered here rather than in boot() so it's in place before the panel providers load
+        // plugins, and a plugin crashing them can still notify users and look up their roles.
+        Relation::enforceMorphMap([
+            'allocation' => Allocation::class,
+            'api_key' => ApiKey::class,
+            'backup' => Backup::class,
+            'database' => Database::class,
+            'egg' => Egg::class,
+            'egg_variable' => EggVariable::class,
+            'schedule' => Schedule::class,
+            'server' => Server::class,
+            'ssh_key' => UserSSHKey::class,
+            'task' => Task::class,
+            'user' => User::class,
+            'node' => Node::class,
+        ]);
+
         Scramble::ignoreDefaultRoutes();
 
         // Registered here rather than in boot() because Scramble's own provider boots first, and
         // it reads some kinds of extension right then. Registering during register() works for
         // every kind, so this keeps holding once an operation extension is added.
         Scramble::registerExtensions([
-            TransformerModelBindingExtension::class,
-            TransformerFactoryTypeInfer::class,
-            FractalResponseTypeInfer::class,
+            PanelResponseTypeInfer::class,
         ]);
 
         /** @var PluginService $pluginService */

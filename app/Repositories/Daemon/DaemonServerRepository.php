@@ -4,6 +4,7 @@ namespace App\Repositories\Daemon;
 
 use App\Enums\ContainerStatus;
 use App\Enums\HttpStatusCode;
+use App\Facades\Activity;
 use Exception;
 use Filament\Notifications\Notification;
 use Illuminate\Http\Client\ConnectionException;
@@ -17,10 +18,10 @@ class DaemonServerRepository extends DaemonRepository
      *
      * @return array<string, mixed>
      */
-    public function getDetails(): array
+    public function getDetails(int $timeout = 1): array
     {
         try {
-            return $this->getHttpClient()->connectTimeout(1)->timeout(1)->get("/api/servers/{$this->server->uuid}")->throw()->json();
+            return $this->getHttpClient()->connectTimeout($timeout)->timeout($timeout)->get("/api/servers/{$this->server->uuid}")->throw()->json();
         } catch (RequestException $exception) {
             $cfId = $exception->response->header('Cf-Ray');
             $cfCache = $exception->response->header('Cf-Cache-Status');
@@ -167,8 +168,12 @@ class DaemonServerRepository extends DaemonRepository
      */
     public function power(string $action): Response
     {
-        return $this->getHttpClient()->post("/api/servers/{$this->server->uuid}/power",
+        $response = $this->getHttpClient()->post("/api/servers/{$this->server->uuid}/power",
             ['action' => $action],
         );
+
+        Activity::event(strtolower("server:power.$action"))->subject($this->server)->log();
+
+        return $response;
     }
 }
