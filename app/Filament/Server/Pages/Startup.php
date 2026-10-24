@@ -44,7 +44,7 @@ class Startup extends ServerFormPage
             ->components([
                 Hidden::make('previewing')
                     ->default(false),
-                // Game Settings shows only the game's settings, to admins too (Kyle, 2026-10-21): the
+                // Game Settings shows only the game's settings, to admins too (LoomNode, 2026-10-21): the
                 // start command and the image are plumbing, edited in the admin area (Servers > Edit).
                 TextInput::make('custom_startup')
                     ->label(trans('server/startup.command'))
