@@ -251,6 +251,10 @@ class Server extends Model implements HasAvatar, Validatable
      */
     public function assertNodeHasCapacity(): void
     {
+        if (!config('panel.enforce_node_capacity')) {
+            return;
+        }
+
         if ($this->exists && ($this->isDirty('node_id') || !$this->isDirty(['memory', 'disk', 'cpu']))) {
             return;
         }
