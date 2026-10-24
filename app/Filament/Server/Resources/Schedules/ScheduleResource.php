@@ -101,7 +101,7 @@ class ScheduleResource extends Resource
                 Section::make(trans('server/schedule.cron'))
                     ->description(function (Get $get) {
                         try {
-                            $nextRun = Utilities::getScheduleNextRunDate((string) $get('cron_minute'), (string) $get('cron_hour'), (string) $get('cron_day_of_month'), (string) $get('cron_month'), (string) $get('cron_day_of_week'), user()->timezone ?? 'UTC')->timezone(user()->timezone ?? 'UTC');
+                            $nextRun = Utilities::getScheduleNextRunDate((string) $get('cron_minute'), (string) $get('cron_hour'), (string) $get('cron_day_of_month'), (string) $get('cron_month'), (string) $get('cron_day_of_week'), Schedule::panelTimezone())->timezone(Schedule::panelTimezone());
                         } catch (Exception) {
                             $nextRun = trans('server/schedule.invalid');
                         }

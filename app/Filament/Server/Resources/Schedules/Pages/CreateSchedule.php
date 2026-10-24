@@ -51,7 +51,7 @@ class CreateSchedule extends CreateRecord
             $data['server_id'] = $server->id;
         }
 
-        $data['timezone'] = user()->timezone ?? 'UTC';
+        $data['timezone'] = Schedule::panelTimezone();
 
         if (!isset($data['next_run_at'])) {
             $data['next_run_at'] = ScheduleResource::getNextRun(
