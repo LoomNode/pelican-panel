@@ -121,29 +121,77 @@ class Startup extends ServerFormPage
                     ->autosize()
                     ->readOnly()
                     ->hidden(),
+                ...$this->variableSections(),
+            ]);
+    }
+
+    /**
+     * One section of settings per group, in the order the groups first appear, and only the first
+     * open: a name "Group · Setting" puts a setting in Group (EggVariable::groupName). An egg
+     * without groups gets the single Variables section it always had (LoomNode, 2026-11-01).
+     *
+     * @return Section[]
+     */
+    protected function variableSections(): array
+    {
+        $groups = $this->getRecord()->eggVariables()
+            ->where('user_viewable', true)
+            ->orderBy('sort')
+            ->get()
+            ->groupBy(fn (EggVariable $variable) => $variable->groupName() ?? '');
+
+        if ($groups->keys()->all() === [''] || $groups->isEmpty()) {
+            return [
                 Section::make(trans('server/startup.variables'))
                     ->columnSpanFull()
-                    ->schema([
-                        Repeater::make('server_variables')
-                            ->hiddenLabel()
-                            ->relationship('serverVariables', function (Builder $query, Server $server) {
-                                $server->ensureVariablesExist();
+                    ->schema([$this->variableRepeater('server_variables')]),
+            ];
+        }
 
-                                return $query->where('egg_variables.user_viewable', true)->orderByPowerJoins('variable.sort');
-                            })
-                            ->grid()
-                            ->disabled(fn (Server $server) => !user()?->can(SubuserPermission::StartupUpdate, $server))
-                            ->reorderable(false)->addable(false)->deletable(false)
-                            ->schema([
-                                StartupVariable::make('variable_value')
-                                    ->fromRecord()
-                                    ->afterStateUpdated(function ($state, ServerVariable $serverVariable) {
-                                        $this->update($state, $serverVariable);
-                                    }),
-                            ])
-                            ->columnSpan(6),
-                    ]),
-            ]);
+        return $groups->values()->map(fn ($variables, int $index) => Section::make($variables->first()->groupName() ?? trans('server/startup.variables'))
+            ->columnSpanFull()
+            ->collapsible()
+            ->collapsed($index > 0)
+            ->schema([$this->variableRepeater('server_variables_' . $index, $variables->pluck('id')->all())])
+        )->all();
+    }
+
+    private bool $variablesChecked = false;
+
+    /**
+     * The server's settings, or only those of the given egg variables.
+     *
+     * @param  int[]|null  $variableIds
+     */
+    protected function variableRepeater(string $name, ?array $variableIds = null): Repeater
+    {
+        return Repeater::make($name)
+            ->hiddenLabel()
+            ->relationship('serverVariables', function (Builder $query, Server $server) use ($variableIds) {
+                if (!$this->variablesChecked) {
+                    $server->ensureVariablesExist();
+                    $this->variablesChecked = true;
+                }
+
+                $query->where('egg_variables.user_viewable', true);
+
+                if ($variableIds !== null) {
+                    $query->whereIn('server_variables.variable_id', $variableIds);
+                }
+
+                return $query->orderByPowerJoins('variable.sort');
+            })
+            ->grid()
+            ->disabled(fn (Server $server) => !user()?->can(SubuserPermission::StartupUpdate, $server))
+            ->reorderable(false)->addable(false)->deletable(false)
+            ->schema([
+                StartupVariable::make('variable_value')
+                    ->fromRecord()
+                    ->afterStateUpdated(function ($state, ServerVariable $serverVariable) {
+                        $this->update($state, $serverVariable);
+                    }),
+            ])
+            ->columnSpan(6);
     }
 
     protected function authorizeAccess(): void
@@ -180,7 +228,7 @@ class Startup extends ServerFormPage
 
             if ($validator->fails()) {
                 Notification::make()
-                    ->title(trans('server/startup.validation_fail', ['variable' => $serverVariable->variable->name]))
+                    ->title(trans('server/startup.validation_fail', ['variable' => $serverVariable->variable->shortName()]))
                     ->body(implode(', ', $validator->errors()->all()))
                     ->danger()
                     ->send();
@@ -206,13 +254,13 @@ class Startup extends ServerFormPage
             }
 
             Notification::make()
-                ->title(trans('server/startup.update', ['variable' => $serverVariable->variable->name]))
+                ->title(trans('server/startup.update', ['variable' => $serverVariable->variable->shortName()]))
                 ->body(fn () => $original . ' -> ' . $state)
                 ->success()
                 ->send();
         } catch (Exception $e) {
             Notification::make()
-                ->title(trans('server/startup.fail', ['variable' => $serverVariable->variable->name]))
+                ->title(trans('server/startup.fail', ['variable' => $serverVariable->variable->shortName()]))
                 ->body($e->getMessage())
                 ->danger()
                 ->send();
