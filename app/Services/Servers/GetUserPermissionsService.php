@@ -49,4 +49,24 @@ class GetUserPermissionsService
 
         return $subuserPermissions;
     }
+
+    /**
+     * The permissions a console (websocket) token carries: handle()'s, and for the server's
+     * owner also its install output, so a customer can watch their server install. Upstream
+     * keeps that to admins because an install script could print a secret; LoomNode's eggs
+     * print none, and none hides one in a setting (eggs/README.md). Subusers still don't see
+     * it, and the other admin-only output stays admin-only (LoomNode, 2026-11-01).
+     *
+     * @return string[]
+     */
+    public function forWebsocket(Server $server, User $user): array
+    {
+        $permissions = $this->handle($server, $user);
+
+        if ($user->id === $server->owner_id && !in_array('admin.websocket.install', $permissions)) {
+            $permissions[] = 'admin.websocket.install';
+        }
+
+        return $permissions;
+    }
 }
