@@ -40,7 +40,7 @@ class WebsocketController extends ClientApiController
         $user = $request->user();
         throw_if($user->cannot(SubuserPermission::WebsocketConnect, $server), new HttpForbiddenException('You do not have permission to connect to this server\'s websocket.'));
 
-        $permissions = $this->permissionsService->handle($server, $user);
+        $permissions = $this->permissionsService->forWebsocket($server, $user);
 
         $node = $server->node;
         if (!is_null($server->transfer)) {

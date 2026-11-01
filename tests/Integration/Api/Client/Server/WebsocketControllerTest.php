@@ -83,7 +83,8 @@ class WebsocketControllerTest extends ClientApiIntegrationTestCase
         $this->assertEquals($expect->addMinutes(10), CarbonImmutable::instance($claims->get('exp'))->setMicroseconds(0));
         $this->assertSame($user->uuid, $claims->get('user_uuid'));
         $this->assertSame($server->uuid, $claims->get('server_uuid'));
-        $this->assertSame(['*'], $claims->get('permissions'));
+        // LoomNode: the owner also gets the install output (GetUserPermissionsService::forWebsocket).
+        $this->assertSame(['*', 'admin.websocket.install'], $claims->get('permissions'));
     }
 
     public function test_jwt_is_configured_correctly_for_server_subuser(): void

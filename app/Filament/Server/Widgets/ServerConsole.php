@@ -51,7 +51,7 @@ class ServerConsole extends Widget
     {
         throw_if(!$this->user || !$this->server || $this->user->cannot(SubuserPermission::WebsocketConnect, $this->server), new HttpForbiddenException('You do not have permission to connect to this server\'s websocket.'));
 
-        $permissions = $this->getUserPermissionsService->handle($this->server, $this->user);
+        $permissions = $this->getUserPermissionsService->forWebsocket($this->server, $this->user);
 
         return $this->nodeJWTService
             ->setExpiresAt(now()->addMinutes(10)->toImmutable())
