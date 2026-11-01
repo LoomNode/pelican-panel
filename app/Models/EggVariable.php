@@ -139,6 +139,24 @@ class EggVariable extends Model implements Validatable
         return static::isSecret($envVariable) && $value !== null && $value !== '' ? '******' : $value;
     }
 
+    /**
+     * A name "Group · Setting" puts the setting under a fold-out Group on Game Settings, shown
+     * as just "Setting". A name without the separator has no group (LoomNode, 2026-11-01).
+     */
+    public const GROUP_SEPARATOR = ' · ';
+
+    public function groupName(): ?string
+    {
+        return str_contains($this->name, self::GROUP_SEPARATOR) ? strstr($this->name, self::GROUP_SEPARATOR, true) : null;
+    }
+
+    public function shortName(): string
+    {
+        $group = $this->groupName();
+
+        return $group === null ? $this->name : substr($this->name, strlen($group) + strlen(self::GROUP_SEPARATOR));
+    }
+
     public function egg(): HasOne
     {
         return $this->hasOne(Egg::class);

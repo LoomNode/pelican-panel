@@ -93,7 +93,7 @@ class StartupVariable extends Field
 
     public function fromRecord(): static
     {
-        $this->variableName(fn (?ServerVariable $record) => $record?->variable->name);
+        $this->variableName(fn (?ServerVariable $record) => $record?->variable->shortName());
         $this->variableDesc(fn (?ServerVariable $record) => $record?->variable->description);
         $this->variableEnv(fn (?ServerVariable $record) => $record?->variable->env_variable);
         $this->variableDefault(fn (?ServerVariable $record) => $record?->variable->default_value);
