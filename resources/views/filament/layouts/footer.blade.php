@@ -5,6 +5,20 @@
         &copy; {{ date('Y') }} {{ $appName }}
     </a>
 
+    {{-- AGPL-3.0 section 13: offer this Panel's source to everyone who uses it. The release
+         folder's LOOMNODE_BUILD ("<release id> <fork commit>") names the exact build. --}}
+    @php
+        $sourceUrl = rtrim(config('app.source_url'), '/');
+        $releaseFile = base_path('LOOMNODE_BUILD');
+        $release = is_readable($releaseFile) ? strtok(trim((string) file_get_contents($releaseFile)), " \n") : null;
+        if ($release && preg_match('/^[A-Za-z0-9._-]+$/', $release)) {
+            $sourceUrl .= '/tree/' . $release;
+        }
+    @endphp
+    <a class="text-xs underline" href="{{ $sourceUrl }}" target="_blank" rel="noopener">
+        Source code of this Panel (AGPL-3.0)
+    </a>
+
     @if(config('app.debug'))
         <div class="flex space-x-1 text-xs">
             <x-filament::icon
