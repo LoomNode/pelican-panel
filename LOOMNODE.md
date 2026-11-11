@@ -37,6 +37,7 @@ First made 2026-09-28. Each change is its own commit on `loomnode`; `git log v1.
 - 2026-11-01: Console: a server's owner sees its install output
 - 2026-11-08: Footer: link to this Panel's source code (AGPL-3.0 section 13)
 - 2026-11-08: this file
+- 2026-11-10: Game Settings: a Mods button (a Modrinth browser for Minecraft server mods) and an Update modpack button
 
 Two of the early changes were reverted before Pelican v1.0.0-rc.2 was merged, because upstream had
 replaced them: the PostgreSQL fix by Pelican's own (#2592), and the America/Chicago schedule change by
