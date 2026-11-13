@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Base\ModIconController;
 use App\Http\Controllers\UpdateStatusController;
 use App\Http\Middleware\RedirectIfNotInstalled;
 use App\Livewire\Installer\PanelInstaller;
@@ -10,3 +11,9 @@ Route::get('installer', PanelInstaller::class)->name('installer')
 
 Route::get('update/status', UpdateStatusController::class)->name('update.status')
     ->middleware('auth');
+
+// Mod pictures for the Mods page (LoomNode): signed-in users only, pictures from Modrinth's file server only.
+Route::get('mod-icon/{project}/{file}', ModIconController::class)
+    ->where(['project' => '[A-Za-z0-9]{4,16}', 'file' => '[A-Za-z0-9_-]{1,100}\.(png|jpe?g|webp|gif)'])
+    ->middleware(['auth', 'throttle:600,1'])
+    ->name('loomnode.mod-icon');
