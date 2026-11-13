@@ -265,12 +265,25 @@
                     case 'install output':
                         handleConsoleOutput(args[0]);
                         break;
-                    case 'install completed':
+                    case 'install completed': {
                         statusIsLive = true;
-                        $wire.dispatch('refresh-sidebar');
-                        $wire.dispatch('refresh-topbar');
-                        $wire.dispatch('removeAlertBanner', { id: 'server_conflict' });
+                        // LoomNode: Wings says this a moment before the panel records the install as
+                        // done, and nothing else re-renders the power buttons of a server that stays
+                        // offline, so the page looked stuck on "installing" until a reload. Refresh
+                        // now and again shortly after.
+                        const refreshAfterInstall = () => {
+                            if (tornDown) {
+                                return;
+                            }
+                            $wire.dispatch('refresh-sidebar');
+                            $wire.dispatch('refresh-topbar');
+                            $wire.dispatch('removeAlertBanner', { id: 'server_conflict' });
+                            $wire.dispatch('console-status', { state: null });
+                        };
+                        refreshAfterInstall();
+                        [2000, 6000, 15000].forEach((delay) => setTimeout(refreshAfterInstall, delay));
                         break;
+                    }
                     case 'feature match':
                         Livewire.dispatch('mount-feature', { data: args[0] });
                         break;
