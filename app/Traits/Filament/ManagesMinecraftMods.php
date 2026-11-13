@@ -6,7 +6,7 @@ use App\Enums\SubuserPermission;
 use App\Enums\TablerIcon;
 use App\Facades\Activity;
 use App\Filament\Server\Pages\Console;
-use App\Filament\Server\Pages\Startup;
+use App\Filament\Server\Pages\Mods;
 use App\Models\Backup;
 use App\Models\EggVariable;
 use App\Models\Server;
@@ -26,8 +26,8 @@ use Illuminate\Support\Facades\Validator;
 use Throwable;
 
 /**
- * Minecraft mods and modpack updates (LoomNode, 2026-11-10; shared by Game Settings and the Mods page
- * since 2026-11-13). Only for a server whose egg has the stage 2 Minecraft settings (MC_MODS, MC_MODPACK).
+ * Minecraft mods and modpacks (LoomNode, 2026-11-10; used by the Mods page and, for its Reinstall
+ * button, by Settings). Only for a server whose egg has the stage 2 Minecraft settings (MC_MODS, MC_MODPACK).
  * The Panel only writes settings and starts a reinstall: the egg's installer does the downloading
  * (eggs/minecraft-install.sh) and records what it installed in .loomnode/install.
  */
@@ -39,6 +39,8 @@ trait ManagesMinecraftMods
     public const TUNNEL_MODS = ['e4mc', 'qANg5Jrr'];
 
     public const LOADERS = ['fabric' => 'Fabric', 'neoforge' => 'NeoForge', 'forge' => 'Forge'];
+
+    public const MOD_SETTINGS = ['MC_MODPACK', 'MC_MODPACK_VERSION', 'MC_MODS', 'MC_LOADER', 'MC_LOADER_VERSION'];
 
     /** @var array<string, string>|null */
     private ?array $installInfo = null;
@@ -52,14 +54,21 @@ trait ManagesMinecraftMods
         return in_array('MC_MODS', $env, true) && in_array('MC_MODPACK', $env, true);
     }
 
+    /**
+     * One of the mod settings. Since 2026-11-13 the egg hides them from Game Settings (not viewable, not
+     * editable there or through the client API): the Mods page is the one place that changes them, behind
+     * the same permissions, so nothing skips its backup step.
+     */
     protected function minecraftVariable(string $env): ?ServerVariable
     {
+        abort_unless(in_array($env, self::MOD_SETTINGS, true), 403);
+
         $server = $this->getRecord();
         $server->ensureVariablesExist();
 
         /** @var ?ServerVariable $variable */
         $variable = $server->serverVariables()
-            ->whereHas('variable', fn (Builder $query) => $query->where('env_variable', $env)->where('user_viewable', true)->where('user_editable', true))
+            ->whereHas('variable', fn (Builder $query) => $query->where('env_variable', $env))
             ->first();
 
         return $variable;
@@ -155,6 +164,152 @@ trait ManagesMinecraftMods
         }) ?: null;
     }
 
+    // ---- What is set against what is installed ----------------------------------------------------------
+
+    /** @return string[] the Mods setting as a list ("slug" or "slug@version") */
+    protected function currentMods(): array
+    {
+        $value = (string) $this->minecraftVariable('MC_MODS')?->variable_value;
+
+        return array_values(array_unique(array_filter(array_map('trim', preg_split('/[,;]/', $value) ?: []))));
+    }
+
+    /** The Modpack setting as the installer reads it: a Modrinth slug, also when a link was typed. */
+    protected function wantedPack(): string
+    {
+        $value = (string) $this->minecraftVariable('MC_MODPACK')?->variable_value;
+        $value = (string) preg_replace('#/.*#', '', (string) preg_replace('#^https?://modrinth\.com/modpack/#', '', trim($value)));
+
+        return (string) preg_replace('/[^A-Za-z0-9_-]/', '', $value);
+    }
+
+    /**
+     * How the mod settings differ from what the last install put on the server.
+     *  - add / remove: mods in the list ("slug" or "slug@version")
+     *  - safe:  other changes that leave the world alone, as text (a loader on a vanilla server, a loader version)
+     *  - risky: changes that can take things out of the world or change its Minecraft version, as text
+     *           (another modpack or pack version, no modpack any more, another loader)
+     *
+     * @return array{add: string[], remove: string[], safe: string[], risky: string[]}
+     */
+    protected function pendingChanges(): array
+    {
+        $info = $this->installInfo();
+        $want = $this->currentMods();
+        $changes = ['add' => $want, 'remove' => [], 'safe' => [], 'risky' => []];
+        if (array_key_exists('mods', $info)) {
+            $have = array_values(array_filter(explode(',', $info['mods'])));
+            $lower = fn (array $list) => array_map('strtolower', $list);
+            $slugs = fn (array $list) => array_map(fn ($mod) => strtolower(explode('@', $mod)[0]), $list);
+            // another version of a mod that stays is a change ("+ Lithium 0.14"), not a removal
+            $changes['add'] = array_values(array_filter($want, fn ($mod) => !in_array(strtolower($mod), $lower($have), true)));
+            $changes['remove'] = array_values(array_filter($have, fn ($mod) => !in_array(strtolower(explode('@', $mod)[0]), $slugs($want), true)));
+        }
+        // installed before the installer recorded its mod list: the whole list counts as waiting
+
+        $pack = $this->wantedPack();
+        $hadPack = $info['pack_slug'] ?? '';
+        $hadName = ($info['pack'] ?? '') ?: $hadPack;
+        if (strtolower($pack) !== strtolower($hadPack)) {
+            $changes['risky'][] = match (true) {
+                $pack === '' => '− modpack ' . $hadName,
+                $hadPack === '' => '+ modpack ' . self::packTitle($pack),
+                default => 'modpack ' . $hadName . ' → ' . self::packTitle($pack),
+            };
+        } elseif ($pack !== '') {
+            $version = (string) $this->minecraftVariable('MC_MODPACK_VERSION')?->variable_value;
+            if ($version !== '' && $version !== 'latest' && !in_array($version, [$info['pack_version'] ?? '', $info['pack_version_id'] ?? ''], true)) {
+                $changes['risky'][] = $hadName . ' ' . ($info['pack_version'] ?? '') . ' → ' . $version;
+            }
+        }
+
+        if ($pack === '' && $info !== []) {
+            $loader = (string) $this->minecraftVariable('MC_LOADER')?->variable_value;
+            $had = $info['loader'] ?? '';
+            if (array_key_exists($loader, self::LOADERS) && $had !== '' && $had !== $loader) {
+                if ($had === 'vanilla') {
+                    if ($want === []) {
+                        $changes['safe'][] = '+ ' . self::LOADERS[$loader] . ' mod loader';
+                    }
+                } else {
+                    $changes['risky'][] = 'mod loader ' . (self::LOADERS[$had] ?? $had) . ' → ' . self::LOADERS[$loader];
+                }
+            }
+            $loaderVersion = (string) $this->minecraftVariable('MC_LOADER_VERSION')?->variable_value;
+            if ($loaderVersion !== '' && $loaderVersion !== 'latest' && $had !== 'vanilla' && $had !== '' && $loaderVersion !== ($info['loader_version'] ?? '')) {
+                $changes['safe'][] = 'loader version ' . ($info['loader_version'] ?? '') . ' → ' . $loaderVersion;
+            }
+        }
+
+        return $changes;
+    }
+
+    protected function pendingCount(): int
+    {
+        return array_sum(array_map('count', $this->pendingChanges()));
+    }
+
+    protected function pendingSummary(): string
+    {
+        $pending = $this->pendingChanges();
+
+        return implode(', ', [
+            ...$pending['risky'],
+            ...$pending['safe'],
+            ...array_map(fn ($mod) => '+ ' . self::modTitle($mod), $pending['add']),
+            ...array_map(fn ($mod) => '− ' . self::modTitle($mod), $pending['remove']),
+        ]);
+    }
+
+    /** Why the next install could cost something in the world; '' when it can't. */
+    protected function pendingRisk(): string
+    {
+        $pending = $this->pendingChanges();
+
+        return match (true) {
+            $pending['risky'] !== [] => 'Changing the modpack or the mod loader takes out the blocks, machines and items of every mod that goes, for good, and a world can break on another Minecraft version.',
+            $pending['remove'] !== [] => 'Removing a mod takes everything it added (blocks, machines, items in chests) out of the world for good; putting the mod back later doesn\'t bring them back.',
+            default => '',
+        };
+    }
+
+    /**
+     * Installs that can take things out of the world back up first. Also when the install record has no
+     * mod list yet: then nobody knows what would be removed. A server that was never installed has no world.
+     */
+    protected function installNeedsBackup(): bool
+    {
+        $info = $this->installInfo();
+
+        return $info !== [] && ($this->pendingRisk() !== '' || !array_key_exists('mods', $info));
+    }
+
+    /** May this user start the install that is waiting? One that backs up first also needs the right to back up. */
+    protected function canInstall(): bool
+    {
+        $server = $this->getRecord();
+
+        return (bool) user()?->can(SubuserPermission::SettingsReinstall, $server)
+            && (!$this->installNeedsBackup() || $server->backup_limit <= 0 || user()->can(SubuserPermission::BackupCreate, $server));
+    }
+
+    protected function backupName(): string
+    {
+        return mb_substr('Before: ' . ($this->pendingSummary() ?: 'reinstall'), 0, 120);
+    }
+
+    protected static function modTitle(string $entry): string
+    {
+        $slug = explode('@', $entry)[0];
+
+        return (Cache::get('loomnode:modrinth:title:' . strtolower($slug)) ?? $slug) . ($slug !== $entry ? ' ' . explode('@', $entry, 2)[1] : '');
+    }
+
+    protected static function packTitle(string $slug): string
+    {
+        return Cache::get('loomnode:modrinth:title:' . strtolower($slug)) ?? $slug;
+    }
+
     protected function reinstallNow(Server $server): void
     {
         try {
@@ -193,7 +348,7 @@ trait ManagesMinecraftMods
         $serverId = $server->id;
         $backupId = $backup->id;
         $userId = user()?->id;
-        dispatch(static fn () => Startup::continueInstallAfterBackup($serverId, $backupId, $userId, 0))->delay(now()->addSeconds(20));
+        dispatch(static fn () => Mods::continueInstallAfterBackup($serverId, $backupId, $userId, 0))->delay(now()->addSeconds(20));
         Notification::make()->title('Backing up first')->body('The install starts by itself when the backup is done, usually within a few minutes. Watch the Console.')->success()->send();
         redirect(Console::getUrl());
     }
@@ -211,7 +366,7 @@ trait ManagesMinecraftMods
         }
 
         if ($backup && $backup->completed_at === null && $attempt < 90) {
-            dispatch(static fn () => Startup::continueInstallAfterBackup($serverId, $backupId, $userId, $attempt + 1))->delay(now()->addSeconds(20));
+            dispatch(static fn () => Mods::continueInstallAfterBackup($serverId, $backupId, $userId, $attempt + 1))->delay(now()->addSeconds(20));
 
             return;
         }
@@ -284,7 +439,7 @@ trait ManagesMinecraftMods
                     ->state(function () {
                         $info = $this->installInfo();
                         if (($info['pack_slug'] ?? '') === '') {
-                            return ['Reinstall this server once (Settings) so the Panel knows which pack version is installed.'];
+                            return ['The pack isn\'t installed yet: press Install changes on the Mods page first.'];
                         }
                         [$same, $all] = $this->packVersions();
                         $lines = ['Installed: ' . ($info['pack'] ?? '') . ' ' . ($info['pack_version'] ?? '') . ' (Minecraft ' . ($info['minecraft'] ?? '?') . ').'];
@@ -300,7 +455,7 @@ trait ManagesMinecraftMods
                             $lines[] = $backup . ' Then the server stops and reinstalls at the new version. Your world stays, and configs you changed are kept unless the new version replaces them. Press Start when the install is done.';
                         }
                         if ($all !== null && $same !== null && $all['id'] !== $same['id'] && !in_array($info['minecraft'] ?? '', $all['game_versions'] ?? [], true)) {
-                            $lines[] = 'There is also ' . $all['version_number'] . ' for Minecraft ' . implode(', ', $all['game_versions'] ?? []) . '. Moving to another Minecraft version can break a world, so that isn\'t done here: back up, then type that version under Modpack version and Reinstall.';
+                            $lines[] = 'There is also ' . $all['version_number'] . ' for Minecraft ' . implode(', ', $all['game_versions'] ?? []) . '. Moving to another Minecraft version can break a world, so that isn\'t done here: use Change version on the Modpack tab for it.';
                         }
 
                         return $lines;
@@ -346,7 +501,7 @@ trait ManagesMinecraftMods
                 $serverId = $server->id;
                 $backupId = $backup->id;
                 $oldVersion = $old ?? '';
-                dispatch(static fn () => Startup::continuePackUpdate($serverId, $backupId, $oldVersion, 0))->delay(now()->addSeconds(20));
+                dispatch(static fn () => Mods::continuePackUpdate($serverId, $backupId, $oldVersion, 0))->delay(now()->addSeconds(20));
                 Notification::make()->title('Backing up first')->body('The update starts by itself when the backup is done, usually within a few minutes. Watch the Console.')->success()->send();
                 redirect(Console::getUrl());
             });
@@ -365,7 +520,7 @@ trait ManagesMinecraftMods
         }
 
         if ($backup && $backup->completed_at === null && $attempt < 90) {
-            dispatch(static fn () => Startup::continuePackUpdate($serverId, $backupId, $oldVersion, $attempt + 1))->delay(now()->addSeconds(20));
+            dispatch(static fn () => Mods::continuePackUpdate($serverId, $backupId, $oldVersion, $attempt + 1))->delay(now()->addSeconds(20));
 
             return;
         }

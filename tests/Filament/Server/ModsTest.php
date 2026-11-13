@@ -2,7 +2,6 @@
 
 use App\Enums\SubuserPermission;
 use App\Filament\Server\Pages\Mods;
-use App\Filament\Server\Pages\Startup;
 use App\Models\Backup;
 use App\Models\BackupHost;
 use App\Models\Subuser;
@@ -263,7 +262,7 @@ it('backs up before an install that removes a mod, and reinstalls only after the
     $backup = Backup::factory()->create(['backup_host_id' => BackupHost::factory()->create()->id, 'server_id' => $server->id, 'completed_at' => null]);
     $this->mock(InitiateBackupService::class, function ($mock) use ($backup) {
         $mock->shouldReceive('setIgnoredFiles')->with([])->andReturnSelf();
-        $mock->shouldReceive('handle')->once()->withArgs(fn ($s, $name, $override) => str_starts_with($name, 'Before removing ') && $override === true)->andReturn($backup);
+        $mock->shouldReceive('handle')->once()->withArgs(fn ($s, $name, $override) => str_starts_with($name, 'Before: + Chunky, − ') && $override === true)->andReturn($backup);
     });
     $this->mock(ReinstallServerService::class)->shouldNotReceive('handle');
     $this->actingAs($user);
@@ -365,14 +364,4 @@ it('asks for an install first when the Panel doesn\'t know the Minecraft version
     installFile(VANILLA_INSTALL);
     livewire(Mods::class)->loadTable()->assertSee('Install the modpack first')->assertDontSee('Chunky');
     Http::assertNothingSent();
-});
-
-it('no longer has a Mods button on Game Settings', function () {
-    [$user, $server] = generateTestAccount();
-    minecraftServer($server, ['MC_MODS' => 'lithium']);
-    installFile(FABRIC_WITH_LITHIUM);
-    $this->actingAs($user);
-    Filament::setTenant($server);
-
-    livewire(Startup::class)->assertActionDoesNotExist('loomnode_mods');
 });
