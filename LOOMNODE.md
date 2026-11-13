@@ -44,6 +44,8 @@ First made 2026-09-28. Each change is its own commit on `loomnode`; `git log v1.
 - 2026-11-13: Mods page: a Modpack tab (pick a pack, change its version, remove it) and a mod loader dialog. The
   mod settings and buttons are gone from Game Settings (the egg hides them). An install that removes a mod or
   changes the modpack or loader backs up first, also when started with Reinstall in Settings.
+- 2026-11-13: Console: the power buttons come back by themselves when an install finishes (the page looked
+  stuck on "installing" until a reload)
 
 Two of the early changes were reverted before Pelican v1.0.0-rc.2 was merged, because upstream had
 replaced them: the PostgreSQL fix by Pelican's own (#2592), and the America/Chicago schedule change by
