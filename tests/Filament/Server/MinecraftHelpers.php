@@ -14,13 +14,14 @@ function minecraftServer(Server $server, array $values = []): Server
         'MC_MODPACK_VERSION' => ['required', 'string', 'max:64', 'regex:/^[A-Za-z0-9._+-]+\z/'],
         'MC_MODS' => ['nullable', 'string', 'max:4000', 'regex:/^[A-Za-z0-9_@.+-]+(,[ ]*[A-Za-z0-9_@.+-]+)*\z/'],
         'MC_LOADER' => ['required', 'string', 'in:auto,fabric,neoforge,forge'],
+        'MC_LOADER_VERSION' => ['required', 'string', 'max:64', 'regex:/^[A-Za-z0-9._+-]+\z/'],
     ];
-    $defaults = ['MC_MODPACK' => '', 'MC_MODPACK_VERSION' => 'latest', 'MC_MODS' => '', 'MC_LOADER' => 'auto'];
+    $defaults = ['MC_MODPACK' => '', 'MC_MODPACK_VERSION' => 'latest', 'MC_MODS' => '', 'MC_LOADER' => 'auto', 'MC_LOADER_VERSION' => 'latest'];
     $sort = 2;
     foreach ($rules as $env => $rule) {
         EggVariable::query()->create([
             'egg_id' => $server->egg_id, 'name' => $env, 'description' => '', 'env_variable' => $env,
-            'default_value' => $defaults[$env], 'user_viewable' => true, 'user_editable' => true, 'rules' => $rule, 'sort' => $sort++,
+            'default_value' => $defaults[$env], 'user_viewable' => false, 'user_editable' => false, 'rules' => $rule, 'sort' => $sort++,
         ]);
     }
     $server->ensureVariablesExist();
@@ -71,9 +72,12 @@ function fakeModrinth(): void
             ['id' => 'OLD1', 'version_number' => '6.0.0', 'version_type' => 'release', 'game_versions' => ['1.21.1']],
         ]),
         'api.modrinth.com/v2/project/create_plus/version' => Http::response([
-            ['id' => 'NEWER', 'version_number' => '7.0.0', 'version_type' => 'release', 'game_versions' => ['1.21.11']],
-            ['id' => 'NEW1', 'version_number' => '6.0.1', 'version_type' => 'release', 'game_versions' => ['1.21.1']],
+            ['id' => 'NEWER', 'version_number' => '7.0.0', 'version_type' => 'release', 'game_versions' => ['1.21.11'], 'loaders' => ['neoforge']],
+            ['id' => 'NEW1', 'version_number' => '6.0.1', 'version_type' => 'release', 'game_versions' => ['1.21.1'], 'loaders' => ['neoforge']],
+            ['id' => 'QUILT', 'version_number' => '6.0.1-quilt', 'version_type' => 'release', 'game_versions' => ['1.21.1'], 'loaders' => ['quilt']],
         ]),
+        // anything else: Modrinth doesn't know it (and no test ever reaches the real one)
+        'api.modrinth.com/*' => Http::response([], 404),
     ]);
 }
 

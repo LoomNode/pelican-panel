@@ -11,6 +11,7 @@ use App\Filament\Components\Actions\DeleteIcon;
 use App\Filament\Components\Actions\UploadIcon;
 use App\Models\Server;
 use App\Services\Servers\ReinstallServerService;
+use App\Traits\Filament\ManagesMinecraftMods;
 use BackedEnum;
 use Exception;
 use Filament\Actions\Action;
@@ -28,6 +29,8 @@ use Filament\Support\Enums\Alignment;
 
 class Settings extends ServerFormPage
 {
+    use ManagesMinecraftMods;
+
     protected static string|BackedEnum|null $navigationIcon = TablerIcon::Settings;
 
     protected static ?int $navigationSort = 11;
@@ -206,10 +209,26 @@ class Settings extends ServerFormPage
                             ->disabled(fn (Server $server) => !user()?->can(SubuserPermission::SettingsReinstall, $server))
                             ->requiresConfirmation()
                             ->modalHeading(trans('server/setting.reinstall.modal'))
-                            ->modalDescription(trans('server/setting.reinstall.modal_description'))
+                            ->modalDescription(fn () => trans('server/setting.reinstall.modal_description') . $this->modsReinstallNote())
                             ->modalSubmitActionLabel(trans('server/setting.reinstall.yes'))
                             ->action(function (Server $server, ReinstallServerService $reinstallService) {
                                 abort_unless(user()?->can(SubuserPermission::SettingsReinstall, $server), 403);
+
+                                // LoomNode: a Minecraft reinstall that removes mods or changes the modpack backs up first, like the Mods page's Install changes
+                                if (self::hasMinecraftMods($server) && $this->installNeedsBackup()) {
+                                    if (!$this->canInstall()) {
+                                        Notification::make()
+                                            ->title('This reinstall needs a backup first')
+                                            ->body('It would change the mods on this server. Someone who may make backups has to start it.')
+                                            ->danger()
+                                            ->send();
+
+                                        return;
+                                    }
+                                    $this->backupThenReinstall($server, $this->backupName());
+
+                                    return;
+                                }
 
                                 try {
                                     $reinstallService->handle($server);
@@ -351,5 +370,17 @@ class Settings extends ServerFormPage
     public static function getNavigationLabel(): string
     {
         return trans('server/setting.title');
+    }
+
+    /** LoomNode: what a Minecraft server's reinstall would do to its mods, for the confirmation. */
+    private function modsReinstallNote(): string
+    {
+        if (!self::hasMinecraftMods($this->getRecord()) || $this->pendingCount() === 0) {
+            return '';
+        }
+
+        return ' This also installs the changes waiting on the Mods page: ' . $this->pendingSummary() . '.'
+            . ($this->pendingRisk() !== '' ? ' ' . $this->pendingRisk() : '')
+            . ($this->installNeedsBackup() ? ($this->getRecord()->backup_limit > 0 ? ' A backup is made first.' : ' This server has no backups, so none is made first.') : '');
     }
 }

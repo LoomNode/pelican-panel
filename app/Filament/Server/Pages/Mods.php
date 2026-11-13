@@ -11,6 +11,7 @@ use BackedEnum;
 use Filament\Actions\Action;
 use Filament\Facades\Filament;
 use Filament\Forms\Components\Select;
+use Filament\Forms\Components\TextInput;
 use Filament\Notifications\Notification;
 use Filament\Pages\Page;
 use Filament\Schemas\Components\Callout;
@@ -114,19 +115,11 @@ class Mods extends Page implements HasTable
 
     // ---- What the server runs and what the list says ----------------------------------------------------
 
-    /** @return string[] the Mods setting as a list ("slug" or "slug@version") */
-    protected function currentMods(): array
-    {
-        $value = (string) $this->minecraftVariable('MC_MODS')?->variable_value;
-
-        return array_values(array_unique(array_filter(array_map('trim', preg_split('/[,;]/', $value) ?: []))));
-    }
-
     /**
      * The loader and Minecraft version mods must fit.
      *  - vanilla: no mod loader is installed yet
      *  - choose:  the loader can still be picked here (vanilla, and nothing has fixed one yet)
-     *  - pack:    a modpack is set but not installed, so its loader isn't known yet
+     *  - pack:    a modpack is picked but not installed, so its loader isn't known yet
      *
      * @return array{loader: string, minecraft: string, vanilla: bool, choose: bool, pack: bool}
      */
@@ -144,66 +137,8 @@ class Mods extends Page implements HasTable
             'minecraft' => $info['minecraft'] ?? '',
             'vanilla' => $vanilla,
             'choose' => $choose,
-            'pack' => ($info['type'] ?? '') !== 'modrinth' && filled($this->minecraftVariable('MC_MODPACK')?->variable_value),
+            'pack' => $this->wantedPack() !== '' && strtolower($this->wantedPack()) !== strtolower($info['pack_slug'] ?? ''),
         ];
-    }
-
-    /**
-     * How the Mods setting differs from what the last install put on the server.
-     *
-     * @return array{add: string[], remove: string[]}
-     */
-    protected function pendingChanges(): array
-    {
-        $info = $this->installInfo();
-        $want = $this->currentMods();
-        if (!array_key_exists('mods', $info)) {
-            // installed before the installer recorded its mod list: the whole list counts as waiting
-            return ['add' => $want, 'remove' => []];
-        }
-        $have = array_values(array_filter(explode(',', $info['mods'])));
-        $lower = fn (array $list) => array_map('strtolower', $list);
-        $slugs = fn (array $list) => array_map(fn ($mod) => strtolower(explode('@', $mod)[0]), $list);
-
-        return [
-            // another version of a mod that stays is a change ("+ Lithium 0.14"), not a removal
-            'add' => array_values(array_filter($want, fn ($mod) => !in_array(strtolower($mod), $lower($have), true))),
-            'remove' => array_values(array_filter($have, fn ($mod) => !in_array(strtolower(explode('@', $mod)[0]), $slugs($want), true))),
-        ];
-    }
-
-    /**
-     * Removing a mod takes its blocks and items out of the world for good, so that install backs up first.
-     * Also when the install record has no mod list yet: then nobody knows what would be removed.
-     */
-    private function installNeedsBackup(): bool
-    {
-        return $this->pendingChanges()['remove'] !== [] || !array_key_exists('mods', $this->installInfo());
-    }
-
-    private function canInstall(): bool
-    {
-        $server = $this->getRecord();
-
-        return (bool) user()?->can(SubuserPermission::SettingsReinstall, $server)
-            && (!$this->installNeedsBackup() || $server->backup_limit <= 0 || user()->can(SubuserPermission::BackupCreate, $server));
-    }
-
-    private static function modTitle(string $entry): string
-    {
-        $slug = explode('@', $entry)[0];
-
-        return (Cache::get('loomnode:modrinth:title:' . strtolower($slug)) ?? $slug) . ($slug !== $entry ? ' ' . explode('@', $entry, 2)[1] : '');
-    }
-
-    private function pendingSummary(): string
-    {
-        $pending = $this->pendingChanges();
-
-        return implode(', ', [
-            ...array_map(fn ($mod) => '+ ' . self::modTitle($mod), $pending['add']),
-            ...array_map(fn ($mod) => '− ' . self::modTitle($mod), $pending['remove']),
-        ]);
     }
 
     // ---- The page ----------------------------------------------------------------------------------------
@@ -213,22 +148,19 @@ class Mods extends Page implements HasTable
         return $schema->components([
             Callout::make(fn () => $this->aboutHeading())
                 ->description(fn () => $this->aboutText())
-                ->info(),
-            Callout::make(function () {
-                $pending = $this->pendingChanges();
-                $count = count($pending['add']) + count($pending['remove']);
-
-                return $count === 1 ? '1 change waiting to be installed' : $count . ' changes waiting to be installed';
-            })
+                ->info()
+                ->key('about')
+                ->actions([$this->modLoaderAction()]),
+            Callout::make(fn () => $this->pendingCount() === 1 ? '1 change waiting to be installed' : $this->pendingCount() . ' changes waiting to be installed')
                 ->description(fn () => $this->pendingSummary() . '. '
-                    . ($this->pendingChanges()['remove'] !== [] ? 'Removing a mod takes its blocks and items out of the world for good. ' : '')
+                    . ($this->pendingRisk() !== '' ? $this->pendingRisk() . ' ' : '')
                     . ($this->canInstall()
-                        ? 'Pick everything you want first, then install them in one go.'
-                        : 'They are installed the next time the server is reinstalled (Settings); ask the owner.'))
+                        ? 'Pick everything you want first, then install it in one go.'
+                        : 'Someone who may reinstall this server' . ($this->installNeedsBackup() ? ' and make backups' : '') . ' has to install them; ask the owner.'))
                 ->warning()
                 ->key('pendingChanges')
                 ->actions([$this->installAction()])
-                ->visible(fn () => $this->pendingSummary() !== ''),
+                ->visible(fn () => $this->pendingCount() > 0),
             Tabs::make('Mods')
                 ->key('modTabs')
                 ->livewireProperty('activeTab')
@@ -237,9 +169,40 @@ class Mods extends Page implements HasTable
                 ->tabs([
                     'browse' => Tab::make('browse')->label('Browse')->icon(TablerIcon::Search),
                     'yours' => Tab::make('yours')->label('Your mods')->icon(TablerIcon::Puzzle)->badge(fn () => count($this->currentMods()) ?: null),
+                    'pack' => Tab::make('pack')->label('Modpack')->icon(TablerIcon::Package),
                 ]),
+            Callout::make(fn () => $this->packHeading())
+                ->description(fn () => $this->packText())
+                ->color('gray')
+                ->icon(TablerIcon::Package)
+                ->key('pack')
+                ->actions([$this->changePackVersionAction(), $this->removePackAction()])
+                ->visible(fn () => $this->activeTab === 'pack'),
             EmbeddedTable::make(),
         ]);
+    }
+
+    private function packHeading(): string
+    {
+        $info = $this->installInfo();
+        $pack = $this->wantedPack();
+        if ($pack === '') {
+            return ($info['pack_slug'] ?? '') !== '' ? 'No modpack any more (still installed: ' . (($info['pack'] ?? '') ?: $info['pack_slug']) . ')' : 'No modpack';
+        }
+        if (strtolower($pack) !== strtolower($info['pack_slug'] ?? '')) {
+            return self::packTitle($pack) . ' · waiting for install';
+        }
+
+        return (($info['pack'] ?? '') ?: $pack) . ' ' . ($info['pack_version'] ?? '') . ' · Minecraft ' . ($info['minecraft'] ?? '?') . ' · ' . (self::LOADERS[$info['loader'] ?? ''] ?? ($info['loader'] ?? ''));
+    }
+
+    private function packText(): string
+    {
+        if ($this->wantedPack() === '') {
+            return 'A modpack is a ready-made set of mods that brings its own Minecraft version and mod loader. Pick one below, or add single mods on the Browse tab. Players install the same pack to join.';
+        }
+
+        return 'A server runs one modpack. It keeps its pack version on every reinstall until you press Update modpack (top of the page) or pick another version here. Single mods from the Browse tab go on top of the pack.';
     }
 
     private function aboutHeading(): string
@@ -269,12 +232,12 @@ class Mods extends Page implements HasTable
             return 'The Panel doesn\'t know yet which Minecraft version this server runs. Press Reinstall in Settings once (your world stays), then pick mods here.';
         }
         if ($target['pack']) {
-            return 'A modpack is set in Game Settings but isn\'t installed yet, so its mod loader isn\'t known. Reinstall (Settings) to install the pack, then add mods on top here.';
+            return 'A modpack is picked but isn\'t installed yet, so its mod loader isn\'t known. Press Install changes, then add mods on top here.';
         }
         $text = 'Only mods that run on a server are listed. Mods they need come along by themselves. "Players need it too" means everyone who joins must install that mod as well.';
         if ($target['vanilla']) {
             $text .= $target['choose']
-                ? ' Fabric has the most mods for recent Minecraft versions; big mods like Create are NeoForge or Forge. Pick the loader under Mod loader before the first mod: a server stays on its loader.'
+                ? ' Fabric has the most mods for recent Minecraft versions; big mods like Create are NeoForge or Forge. Pick the loader under Mod loader before the first mod: a server stays on its loader. Or take a ready-made set on the Modpack tab.'
                 : ' To use another loader, remove the mods in the list first.';
             $text .= ' Mods use more memory and CPU than vanilla.';
         }
@@ -285,20 +248,25 @@ class Mods extends Page implements HasTable
     public function updatedActiveTab(): void
     {
         $this->resetPage();
+        $this->resetTableSearch();
         $this->flushCachedTableRecords();
+        // each tab has its own filters, and the filters form was built before the tab changed
+        $this->cacheSchema('tableFiltersForm', $this->getTableFiltersForm(...));
     }
 
     public function table(Table $table): Table
     {
         return $table
-            ->records(fn (?string $search, int|string $page, ?array $filters): LengthAwarePaginator => $this->activeTab === 'yours'
-                ? $this->yourMods((string) $search, (int) $page)
-                : $this->browseMods((string) $search, (int) $page, $filters ?? []))
+            ->records(fn (?string $search, int|string $page, ?array $filters): LengthAwarePaginator => match ($this->activeTab) {
+                'yours' => $this->yourMods((string) $search, (int) $page),
+                'pack' => $this->browsePacks((string) $search, (int) $page, $filters ?? []),
+                default => $this->browseMods((string) $search, (int) $page, $filters ?? []),
+            })
             ->deferLoading()
             ->paginated([self::PER_PAGE])
             ->defaultPaginationPageOption(self::PER_PAGE)
             ->searchable()
-            ->searchPlaceholder('Search mods')
+            ->searchPlaceholder(fn () => $this->activeTab === 'pack' ? 'Search modpacks' : 'Search mods')
             ->searchDebounce('600ms')
             ->columns([
                 // one card-like row per mod: picture, what it is, tags; it stays readable on a phone
@@ -311,7 +279,7 @@ class Mods extends Page implements HasTable
                     Stack::make([
                         TextColumn::make('title')
                             ->weight(FontWeight::SemiBold)
-                            ->url(fn (array $record) => $record['found'] ? 'https://modrinth.com/mod/' . $record['slug'] : null, true),
+                            ->url(fn (array $record) => $record['found'] ? 'https://modrinth.com/' . ($record['pack'] ? 'modpack/' : 'mod/') . $record['slug'] : null, true),
                         TextColumn::make('description')
                             ->color('gray')
                             ->wrap(),
@@ -365,11 +333,16 @@ class Mods extends Page implements HasTable
                     ->placeholder('All kinds')
                     ->options(self::CATEGORIES)
                     ->visible(fn () => $this->activeTab === 'browse'),
+                SelectFilter::make('minecraft')
+                    ->label('Minecraft version')
+                    ->placeholder('Any version')
+                    ->options(fn () => array_filter(['same' => ($this->installInfo()['minecraft'] ?? '') !== '' ? 'This server\'s (' . $this->installInfo()['minecraft'] . ')' : null]))
+                    ->visible(fn () => $this->activeTab === 'pack' && ($this->installInfo()['minecraft'] ?? '') !== ''),
                 SelectFilter::make('sort')
                     ->label('Sort by')
                     ->placeholder('Best match')
                     ->options(self::SORTS)
-                    ->visible(fn () => $this->activeTab === 'browse'),
+                    ->visible(fn () => $this->activeTab !== 'yours'),
                 SelectFilter::make('players')
                     ->label('For players')
                     ->placeholder('Any')
@@ -383,7 +356,7 @@ class Mods extends Page implements HasTable
                     ->label('Add')
                     ->icon(TablerIcon::Plus)
                     ->button()
-                    ->visible(fn (array $record) => !$record['in_list'] && $this->canEdit())
+                    ->visible(fn (array $record) => !$record['pack'] && !$record['in_list'] && $this->canEdit())
                     ->action(fn (array $record) => $this->addMod($record['slug'], $record['title'])),
                 Action::make('version')
                     ->label(fn (array $record) => $record['pinned'] !== '' ? 'Version ' . $record['pinned'] : 'Version')
@@ -391,7 +364,7 @@ class Mods extends Page implements HasTable
                     ->button()
                     ->outlined()
                     ->color('gray')
-                    ->visible(fn (array $record) => $record['in_list'] && $record['found'] && $this->canEdit())
+                    ->visible(fn (array $record) => !$record['pack'] && $record['in_list'] && $record['found'] && $this->canEdit())
                     ->modalHeading(fn (array $record) => $record['title'] . ': which version')
                     ->modalDescription('Newest is right for almost everyone: each install then fetches the newest version for this server. Pick one only when a newer version gives trouble.')
                     ->modalSubmitActionLabel('Save')
@@ -411,8 +384,29 @@ class Mods extends Page implements HasTable
                     ->button()
                     ->outlined()
                     ->color('danger')
-                    ->visible(fn (array $record) => $record['in_list'] && $this->canEdit())
+                    ->visible(fn (array $record) => !$record['pack'] && $record['in_list'] && $this->canEdit())
                     ->action(fn (array $record) => $this->removeMod($record['slug'], $record['title'])),
+                Action::make('usePack')
+                    ->label('Use this pack')
+                    ->icon(TablerIcon::Package)
+                    ->button()
+                    ->visible(fn (array $record) => $record['pack'] && !$record['in_list'] && $this->canEdit())
+                    ->modalHeading(fn (array $record) => 'Use ' . $record['title'])
+                    ->modalDescription(fn () => 'The pack brings its own Minecraft version and mod loader'
+                        . ($this->wantedPack() !== '' ? ', and it replaces the pack this server has now' : '')
+                        . '. A world made with other mods or a newer Minecraft version can break on it, so a backup is made before the install. Nothing changes until you press Install changes.')
+                    ->modalSubmitActionLabel('Use this pack')
+                    ->modalWidth('lg')
+                    ->fillForm(['version' => 'latest'])
+                    ->schema(fn (array $record) => [
+                        Select::make('version')
+                            ->label('Version')
+                            ->options(['latest' => 'Newest release (recommended)'] + $this->packVersionOptions($record['slug']))
+                            ->selectablePlaceholder(false)
+                            ->required()
+                            ->searchable(),
+                    ])
+                    ->action(fn (array $record, array $data) => $this->usePack($record['slug'], $record['title'], (string) ($data['version'] ?? 'latest'))),
             ])
             ->emptyStateIcon(TablerIcon::Puzzle)
             ->emptyStateHeading(fn () => $this->emptyState()[0])
@@ -426,8 +420,9 @@ class Mods extends Page implements HasTable
 
         return match (true) {
             $this->activeTab === 'yours' => ['No mods yet', 'Add some from the Browse tab.'],
-            $target['minecraft'] === '' || $target['pack'] => ['Nothing to pick from yet', 'See the note at the top of this page.'],
             $this->modrinthDown => ['Modrinth can\'t be reached right now', 'Try again in a minute.'],
+            $this->activeTab === 'pack' => ['No modpacks found', 'Only packs that run on a server with Fabric, NeoForge or Forge are listed. Try another word.'],
+            $target['minecraft'] === '' || $target['pack'] => ['Nothing to pick from yet', 'See the note at the top of this page.'],
             default => ['No mods found', 'Only mods that run on a ' . self::LOADERS[$target['loader']] . ' server with Minecraft ' . $target['minecraft'] . ' are listed. Try another word, or clear Kind.'],
         };
     }
@@ -513,7 +508,7 @@ class Mods extends Page implements HasTable
             $row = $project !== null
                 ? $this->row(explode('@', $entry)[0], $project, $list)
                 : [
-                    ArrayRecord::getKeyName() => explode('@', $entry)[0], 'slug' => explode('@', $entry)[0], 'title' => explode('@', $entry)[0],
+                    ArrayRecord::getKeyName() => explode('@', $entry)[0], 'slug' => explode('@', $entry)[0], 'title' => explode('@', $entry)[0], 'pack' => false,
                     'description' => 'Modrinth has no mod with this name (or can\'t be reached right now). The installer skips it.', 'found' => false,
                     'icon' => null, 'author' => '', 'categories' => [], 'players' => null, 'downloads' => null, 'updated' => null,
                     'in_list' => true, 'pinned' => str_contains($entry, '@') ? explode('@', $entry, 2)[1] : '', 'status' => $this->status($entry),
@@ -524,6 +519,249 @@ class Mods extends Page implements HasTable
         }
 
         return new LengthAwarePaginator(array_slice($rows, (max(1, $page) - 1) * self::PER_PAGE, self::PER_PAGE, true), count($rows), self::PER_PAGE, max(1, $page));
+    }
+
+    /**
+     * Modrinth search for modpacks that run on a server with a loader the installer knows.
+     *
+     * @param  array<string, mixed>  $filters
+     * @return LengthAwarePaginator<string, array<string, mixed>>
+     */
+    protected function browsePacks(string $search, int $page, array $filters): LengthAwarePaginator
+    {
+        $page = max(1, min($page, 100));
+        $search = mb_substr(trim($search), 0, 100);
+        $facets = [
+            ['project_type:modpack'],
+            array_map(fn ($loader) => 'categories:' . $loader, array_keys(self::LOADERS)),
+            ['server_side:required', 'server_side:optional'],
+        ];
+        $minecraft = $this->installInfo()['minecraft'] ?? '';
+        if (($filters['minecraft']['value'] ?? '') === 'same' && $minecraft !== '') {
+            $facets[] = ['versions:' . $minecraft];
+        }
+        $sort = (string) ($filters['sort']['value'] ?? '');
+
+        $answer = self::modrinth('search', [
+            'query' => $search,
+            'facets' => json_encode($facets),
+            'index' => array_key_exists($sort, self::SORTS) ? $sort : ($search === '' ? 'downloads' : 'relevance'),
+            'offset' => ($page - 1) * self::PER_PAGE,
+            'limit' => self::PER_PAGE,
+        ]);
+        $this->modrinthDown = $answer === null;
+
+        $rows = [];
+        foreach ($answer['hits'] ?? [] as $hit) {
+            $row = $this->packRow($hit);
+            if ($row !== null) {
+                $rows[$row['slug']] = $row;
+            }
+        }
+
+        return new LengthAwarePaginator($rows, min((int) ($answer['total_hits'] ?? 0), 100 * self::PER_PAGE), self::PER_PAGE, $page);
+    }
+
+    /**
+     * One table row from a Modrinth modpack search hit, in the shape of a mod's row.
+     *
+     * @param  array<string, mixed>  $hit
+     * @return array<string, mixed>|null
+     */
+    private function packRow(array $hit): ?array
+    {
+        $slug = (string) ($hit['slug'] ?? '');
+        if (!preg_match('/^[A-Za-z0-9_-]{1,64}$/', $slug)) {
+            return null;
+        }
+        $wanted = strtolower($this->wantedPack());
+        $installed = strtolower($this->installInfo()['pack_slug'] ?? '');
+        $title = mb_substr((string) ($hit['title'] ?? $slug), 0, 80);
+        Cache::put('loomnode:modrinth:title:' . strtolower($slug), $title, now()->addDay());
+        $mine = $wanted !== '' && in_array($wanted, [strtolower($slug), strtolower((string) ($hit['project_id'] ?? ''))], true);
+
+        return [
+            ArrayRecord::getKeyName() => $slug,
+            'slug' => $slug,
+            'pack' => true,
+            'title' => $title,
+            'description' => mb_substr((string) ($hit['description'] ?? ''), 0, 200),
+            'found' => true,
+            'icon' => self::iconUrl((string) ($hit['icon_url'] ?? '')),
+            'author' => mb_substr((string) ($hit['author'] ?? ''), 0, 40),
+            // for a pack the tags are the loaders it comes for
+            'categories' => array_values(array_intersect_key(self::LOADERS, array_flip(array_filter((array) ($hit['categories'] ?? []), 'is_string')))),
+            'players' => null,
+            'downloads' => (int) ($hit['downloads'] ?? 0),
+            'updated' => is_string($hit['date_modified'] ?? null) ? $hit['date_modified'] : null,
+            'in_list' => $mine,
+            'pinned' => '',
+            'status' => !$mine ? null : ($wanted === $installed && !$this->packVersionWaiting() ? 'Installed' : 'Waiting for install'),
+        ];
+    }
+
+    private function packVersionWaiting(): bool
+    {
+        return array_filter($this->pendingChanges()['risky'], fn ($change) => str_contains($change, ' → ')) !== [];
+    }
+
+    /**
+     * A pack's versions for the loaders the installer knows, newest first: what goes into the Modpack
+     * version setting => what the picker shows. The version id stands in for a name the setting can't hold.
+     *
+     * @return array<string, string>
+     */
+    protected function packVersionOptions(string $slug): array
+    {
+        $options = [];
+        if (!preg_match('/^[A-Za-z0-9_-]{1,64}$/', $slug)) {
+            return $options;
+        }
+        foreach (array_slice(self::modrinth('project/' . $slug . '/version') ?? [], 0, 80) as $version) {
+            $loaders = array_intersect_key(self::LOADERS, array_flip(array_filter((array) ($version['loaders'] ?? []), 'is_string')));
+            if ($loaders === []) {
+                continue;
+            }
+            $name = (string) ($version['version_number'] ?? '');
+            $key = preg_match('/^[A-Za-z0-9._+-]{1,64}$/', $name) && $name !== 'latest' ? $name : (string) ($version['id'] ?? '');
+            if ($key !== '') {
+                $options[$key] ??= mb_substr($name, 0, 50) . ' · ' . ($version['version_type'] ?? 'release')
+                    . ' · Minecraft ' . implode(', ', array_slice(array_filter((array) ($version['game_versions'] ?? []), 'is_string'), 0, 3))
+                    . ' · ' . implode('/', $loaders);
+            }
+        }
+
+        return $options;
+    }
+
+    protected function usePack(string $slug, string $title, string $version): void
+    {
+        abort_unless($this->canEdit(), 403);
+        if (!preg_match('/^[A-Za-z0-9_-]{1,64}$/', $slug) || ($version !== 'latest' && !array_key_exists($version, $this->packVersionOptions($slug)))) {
+            return;
+        }
+        if ($this->setMinecraftVariable('MC_MODPACK', $slug) && $this->setMinecraftVariable('MC_MODPACK_VERSION', $version)) {
+            Notification::make()->title($title . ' picked')->body('Press Install changes to install it.')->success()->send();
+        }
+        $this->flushCachedTableRecords();
+    }
+
+    /** In the Modpack box: another version of the pack the server has. Public so Filament finds it by name. */
+    public function changePackVersionAction(): Action
+    {
+        return Action::make('changePackVersion')
+            ->label('Change version')
+            ->icon(TablerIcon::Versions)
+            ->button()
+            ->outlined()
+            ->color('gray')
+            ->visible(fn () => $this->wantedPack() !== '' && $this->canEdit())
+            ->modalHeading('Modpack version')
+            ->modalDescription('For the newest version of the same Minecraft version, Update modpack (top of the page) is the easy way. Here you can pick any version. A world can break on another Minecraft version or on an older pack, so a backup is made before the install. Nothing changes until you press Install changes.')
+            ->modalSubmitActionLabel('Save')
+            ->modalWidth('lg')
+            ->fillForm(function () {
+                $version = (string) $this->minecraftVariable('MC_MODPACK_VERSION')?->variable_value;
+                $info = $this->installInfo();
+                $installed = array_key_exists($info['pack_version'] ?? '', $this->packVersionOptions($this->wantedPack())) ? $info['pack_version'] : ($info['pack_version_id'] ?? null);
+
+                return ['version' => $version !== '' && $version !== 'latest' ? $version : $installed];
+            })
+            ->schema(fn () => [
+                Select::make('version')
+                    ->label('Version')
+                    ->options($this->packVersionOptions($this->wantedPack()))
+                    ->required()
+                    ->searchable(),
+            ])
+            ->action(function (array $data) {
+                abort_unless($this->canEdit(), 403);
+                $version = (string) ($data['version'] ?? '');
+                if ($this->wantedPack() === '' || !array_key_exists($version, $this->packVersionOptions($this->wantedPack()))) {
+                    return;
+                }
+                if ($this->setMinecraftVariable('MC_MODPACK_VERSION', $version)) {
+                    Notification::make()->title('Modpack version set to ' . $version)->body('Press Install changes to install it.')->success()->send();
+                }
+                $this->flushCachedTableRecords();
+            });
+    }
+
+    public function removePackAction(): Action
+    {
+        return Action::make('removePack')
+            ->label('Remove modpack')
+            ->icon(TablerIcon::Trash)
+            ->button()
+            ->outlined()
+            ->color('danger')
+            ->visible(fn () => $this->wantedPack() !== '' && $this->canEdit())
+            ->requiresConfirmation()
+            ->modalHeading('Remove the modpack')
+            ->modalDescription('The next install takes the pack\'s mods off the server; the mod loader and your own mods stay. Everything the pack\'s mods added to the world goes with them for good, so a backup is made before the install. Nothing changes until you press Install changes.')
+            ->modalSubmitActionLabel('Remove modpack')
+            ->action(function () {
+                abort_unless($this->canEdit(), 403);
+                if ($this->setMinecraftVariable('MC_MODPACK', '') && $this->setMinecraftVariable('MC_MODPACK_VERSION', 'latest')) {
+                    Notification::make()->title('Modpack removed')->body('Press Install changes to take it off the server.')->success()->send();
+                }
+                $this->flushCachedTableRecords();
+            });
+    }
+
+    /** In the box at the top: the mod loader with no mods listed (for your own jars) and its version. */
+    public function modLoaderAction(): Action
+    {
+        return Action::make('modLoader')
+            ->label('Mod loader')
+            ->icon(TablerIcon::Settings)
+            ->button()
+            ->outlined()
+            ->color('gray')
+            ->visible(fn () => $this->wantedPack() === '' && ($this->installInfo()['type'] ?? '') !== 'modrinth' && $this->installInfo() !== [] && $this->canEdit())
+            ->modalHeading('Mod loader')
+            ->modalDescription('Adding a mod on the Browse tab sets this for you. Pick a loader here only to get it without any mods from the list, for example to upload your own jars into mods/ (Files).')
+            ->modalSubmitActionLabel('Save')
+            ->modalWidth('lg')
+            ->fillForm(fn () => [
+                'loader' => (string) $this->minecraftVariable('MC_LOADER')?->variable_value ?: 'auto',
+                'loader_version' => (string) $this->minecraftVariable('MC_LOADER_VERSION')?->variable_value ?: 'latest',
+            ])
+            ->schema(fn () => [
+                Select::make('loader')
+                    ->label('Mod loader')
+                    ->options(['auto' => 'Automatic: what your mods need, vanilla without mods'] + self::LOADERS)
+                    ->selectablePlaceholder(false)
+                    ->required()
+                    ->disabled(fn () => $this->currentMods() !== [])
+                    ->helperText(fn () => $this->currentMods() !== [] ? 'The mods in your list are for this loader. Remove them first to pick another.' : 'A server stays on its loader: changing it later takes out everything the old loader\'s mods added.'),
+                TextInput::make('loader_version')
+                    ->label('Loader version')
+                    ->helperText('latest, or a version number from the loader\'s own site. Leave it on latest unless a mod asks for a certain one.')
+                    ->required()
+                    ->maxLength(64),
+            ])
+            ->action(function (array $data) {
+                abort_unless($this->canEdit(), 403);
+                $saved = true;
+                if ($this->currentMods() === [] && array_key_exists((string) ($data['loader'] ?? ''), ['auto' => ''] + self::LOADERS)) {
+                    $saved = $this->setMinecraftVariable('MC_LOADER', (string) $data['loader']);
+                }
+                $saved = $saved && $this->setMinecraftVariable('MC_LOADER_VERSION', trim((string) ($data['loader_version'] ?? 'latest')) ?: 'latest');
+                if ($saved) {
+                    Notification::make()->title('Mod loader saved')->success()->send();
+                    $this->redirect(static::getUrl(), navigate: true);
+                }
+            });
+    }
+
+    private static function iconUrl(string $url): ?string
+    {
+        if (preg_match('#^https://cdn\.modrinth\.com/data/([A-Za-z0-9]{4,16})/([A-Za-z0-9_-]{1,100}\.(?:png|jpe?g|webp|gif))$#', $url, $m)) {
+            return route('loomnode.mod-icon', ['project' => $m[1], 'file' => $m[2]]);
+        }
+
+        return null;
     }
 
     /** @return array<string, string> the list by lowercase slug: "sodium" => "sodium@0.6.0" */
@@ -574,18 +812,14 @@ class Mods extends Page implements HasTable
         $title = mb_substr((string) ($mod['title'] ?? $slug), 0, 80);
         Cache::put('loomnode:modrinth:title:' . strtolower($slug), $title, now()->addDay());
 
-        $icon = null;
-        if (preg_match('#^https://cdn\.modrinth\.com/data/([A-Za-z0-9]{4,16})/([A-Za-z0-9_-]{1,100}\.(?:png|jpe?g|webp|gif))$#', (string) ($mod['icon_url'] ?? ''), $m)) {
-            $icon = route('loomnode.mod-icon', ['project' => $m[1], 'file' => $m[2]]);
-        }
-
         return [
             ArrayRecord::getKeyName() => $slug,
             'slug' => $slug,
+            'pack' => false,
             'title' => $title,
             'description' => mb_substr((string) ($mod['description'] ?? ''), 0, 200),
             'found' => true,
-            'icon' => $icon,
+            'icon' => self::iconUrl((string) ($mod['icon_url'] ?? '')),
             'author' => mb_substr((string) ($mod['author'] ?? ''), 0, 40),
             'categories' => array_values(array_map(
                 fn ($category) => self::CATEGORIES[$category],
@@ -719,7 +953,6 @@ class Mods extends Page implements HasTable
 
     // ---- Installing ---------------------------------------------------------------------------------------
 
-    /** @return array<Action> */
     /** Shown in the "waiting to be installed" box; public so Filament finds it by name. */
     public function installAction(): Action
     {
@@ -727,14 +960,11 @@ class Mods extends Page implements HasTable
             ->label('Install changes')
             ->icon(TablerIcon::Download)
             ->button()
-            ->visible(fn () => $this->pendingSummary() !== '' && $this->canInstall())
+            ->visible(fn () => $this->pendingCount() > 0 && $this->canInstall())
             ->requiresConfirmation()
             ->modalHeading('Install changes')
             ->modalDescription(function () {
-                $text = $this->pendingSummary() . '. ';
-                if ($this->pendingChanges()['remove'] !== []) {
-                    $text .= 'Removing a mod takes everything it added (blocks, machines, items in chests) out of the world for good; putting the mod back later doesn\'t bring them back. ';
-                }
+                $text = $this->pendingSummary() . '. ' . ($this->pendingRisk() !== '' ? $this->pendingRisk() . ' ' : '');
                 $text .= match (true) {
                     !$this->installNeedsBackup() => 'The server stops and reinstalls; your world and configs stay. ',
                     $this->getRecord()->backup_limit <= 0 => 'This server has no backups, so none is made first: download your world (Files) if you\'re not sure. The server stops and reinstalls. ',
@@ -746,10 +976,9 @@ class Mods extends Page implements HasTable
             ->modalSubmitActionLabel(fn () => $this->installNeedsBackup() && $this->getRecord()->backup_limit > 0 ? 'Back up and install' : 'Stop and install')
             ->action(function () {
                 $server = $this->getRecord();
-                abort_unless($this->canInstall() && $this->pendingSummary() !== '', 403);
+                abort_unless($this->canInstall() && $this->pendingCount() > 0, 403);
                 if ($this->installNeedsBackup()) {
-                    $names = array_map(fn ($mod) => self::modTitle($mod), $this->pendingChanges()['remove']);
-                    $this->backupThenReinstall($server, mb_substr($names === [] ? 'Before installing mods' : 'Before removing ' . implode(', ', $names), 0, 120));
+                    $this->backupThenReinstall($server, $this->backupName());
 
                     return;
                 }

@@ -10,10 +10,8 @@ use App\Filament\Components\Forms\Fields\StartupVariable;
 use App\Models\EggVariable;
 use App\Models\Server;
 use App\Models\ServerVariable;
-use App\Traits\Filament\ManagesMinecraftMods;
 use BackedEnum;
 use Exception;
-use Filament\Actions\Action;
 use Filament\Facades\Filament;
 use Filament\Forms\Components\Hidden;
 use Filament\Forms\Components\Repeater;
@@ -29,8 +27,6 @@ use Illuminate\Support\Facades\Validator;
 
 class Startup extends ServerFormPage
 {
-    use ManagesMinecraftMods;
-
     protected static string|BackedEnum|null $navigationIcon = TablerIcon::PlayerPlay;
 
     protected static ?int $navigationSort = 10;
@@ -196,15 +192,6 @@ class Startup extends ServerFormPage
                     }),
             ])
             ->columnSpan(6);
-    }
-
-    // Minecraft (LoomNode, 2026-11-10): "Update modpack" sits here next to the Modpack settings; the mods
-    // themselves have their own page (Mods). Both share ManagesMinecraftMods.
-
-    /** @return array<Action> */
-    protected function getDefaultHeaderActions(): array
-    {
-        return [$this->updatePackAction()];
     }
 
     protected function authorizeAccess(): void
