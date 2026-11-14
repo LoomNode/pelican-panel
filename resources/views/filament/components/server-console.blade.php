@@ -122,8 +122,17 @@
 
         const TERMINAL_PRELUDE = '\u001b[1m\u001b[33m{{ $terminalPrelude }}@' + '{{ \Filament\Facades\Filament::getTenant()->name }}' + ' ~ \u001b[0m';
 
-        const handleConsoleOutput = (line, prelude = false) =>
+        // LoomNode: the container prints its start command before running it. For eggs that carry
+        // their start script packed inside that command (Minecraft), that is a wall of base64: show
+        // one short line instead. Only this exact shape is replaced; every other line is untouched.
+        const PACKED_START = /^(?:\u001b\[[0-9;]*m)*container[^ ]*~ (?:\u001b\[[0-9;]*m)*echo '[A-Za-z0-9+\/=]{200,}' \| base64 -d \| gunzip > \.loomnode-start\.sh && exec bash \.loomnode-start\.sh\s*$/;
+
+        const handleConsoleOutput = (line, prelude = false) => {
+            if (PACKED_START.test(line)) {
+                line = '\u001b[1m\u001b[33mcontainer~ \u001b[0mstarting the server (LoomNode start script)';
+            }
             terminal.writeln((prelude ? TERMINAL_PRELUDE : '') + line.replace(/(?:\r\n|\r|\n)$/im, '') + '\u001b[0m');
+        };
 
         const handleTransferStatus = (status) =>
             status === 'failure' && terminal.writeln(TERMINAL_PRELUDE + 'Transfer has failed.\u001b[0m');

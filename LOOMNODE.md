@@ -46,6 +46,8 @@ First made 2026-09-28. Each change is its own commit on `loomnode`; `git log v1.
   changes the modpack or loader backs up first, also when started with Reinstall in Settings.
 - 2026-11-13: Console: the power buttons come back by themselves when an install finishes (the page looked
   stuck on "installing" until a reload)
+- 2026-11-13: Console: the Minecraft start command (its start script packed as base64) shows as one short
+  "starting the server" line instead of a wall of text
 
 Two of the early changes were reverted before Pelican v1.0.0-rc.2 was merged, because upstream had
 replaced them: the PostgreSQL fix by Pelican's own (#2592), and the America/Chicago schedule change by
