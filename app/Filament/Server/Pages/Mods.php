@@ -964,7 +964,7 @@ class Mods extends Page implements HasTable
             ->requiresConfirmation()
             ->modalHeading('Install changes')
             ->modalDescription(function () {
-                $text = $this->pendingSummary() . '. ' . ($this->pendingRisk() !== '' ? $this->pendingRisk() . ' ' : '');
+                $text = $this->pendingSummary() . '. ' . ($this->pendingRisk() !== '' ? $this->pendingRisk() . ' ' : '') . $this->worldGoesBackNote();
                 $text .= match (true) {
                     !$this->installNeedsBackup() => 'The server stops and reinstalls; your world and configs stay. ',
                     $this->getRecord()->backup_limit <= 0 => 'This server has no backups, so none is made first: download your world (Files) if you\'re not sure. The server stops and reinstalls. ',

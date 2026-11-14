@@ -6,6 +6,7 @@ use App\Filament\Server\Pages\Settings;
 use App\Filament\Server\Pages\Startup;
 use App\Models\Backup;
 use App\Models\BackupHost;
+use App\Models\EggVariable;
 use App\Models\Subuser;
 use App\Services\Backups\InitiateBackupService;
 use App\Services\Servers\ReinstallServerService;
@@ -280,4 +281,49 @@ it('leaves Reinstall in Settings alone for other games', function () {
     Filament::setTenant($server);
 
     livewire(Settings::class)->callAction(TestAction::make('exclude_reinstall')->schemaComponent(true));
+});
+
+it('says the world is kept aside when the next install goes to an older Minecraft', function () {
+    [$user, $server] = generateTestAccount();
+    $server->update(['backup_limit' => 2]);
+    minecraftServer($server, ['MC_MODPACK' => 'oldpack', 'MC_MODPACK_VERSION' => 'latest']);
+    installFile(PACK_INSTALL);
+    fakeModrinth();
+    $this->actingAs($user);
+    Filament::setTenant($server);
+
+    livewire(Mods::class)->mountAction('install')
+        ->assertMountedActionModalSee('from Minecraft 1.21.1 to the older 1.19.2')
+        ->assertMountedActionModalSee('ends in -1.21.1');
+});
+
+it('says nothing about the world when the next install goes to a newer Minecraft', function () {
+    [$user, $server] = generateTestAccount();
+    $server->update(['backup_limit' => 2]);
+    minecraftServer($server, ['MC_MODPACK' => 'create_plus', 'MC_MODPACK_VERSION' => '7.0.0']);
+    installFile(PACK_INSTALL);
+    fakeModrinth();
+    $this->actingAs($user);
+    Filament::setTenant($server);
+
+    livewire(Mods::class)->mountAction('install')
+        ->assertMountedActionModalSee('A backup is made first')
+        ->assertMountedActionModalDontSee('to the older');
+});
+
+it('tells about the world on a Settings reinstall to an older vanilla Minecraft', function () {
+    [$user, $server] = generateTestAccount();
+    minecraftServer($server);
+    EggVariable::query()->create(['egg_id' => $server->egg_id, 'name' => 'Minecraft version', 'description' => '', 'env_variable' => 'VANILLA_VERSION',
+        'default_value' => 'latest', 'user_viewable' => true, 'user_editable' => true, 'rules' => ['required', 'string', 'max:20'], 'sort' => 1]);
+    $server->refresh()->ensureVariablesExist();
+    $server->serverVariables()->whereHas('variable', fn ($q) => $q->where('env_variable', 'VANILLA_VERSION'))->update(['variable_value' => '1.19.2']);
+    installFile(VANILLA_INSTALL);
+    fakeModrinth();
+    $this->actingAs($user);
+    Filament::setTenant($server);
+
+    livewire(Settings::class)
+        ->mountAction(TestAction::make('exclude_reinstall')->schemaComponent(true))
+        ->assertMountedActionModalSee('to the older 1.19.2');
 });

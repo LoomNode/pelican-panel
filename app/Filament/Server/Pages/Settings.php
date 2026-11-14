@@ -375,12 +375,17 @@ class Settings extends ServerFormPage
     /** LoomNode: what a Minecraft server's reinstall would do to its mods, for the confirmation. */
     private function modsReinstallNote(): string
     {
-        if (!self::hasMinecraftMods($this->getRecord()) || $this->pendingCount() === 0) {
+        if (!self::hasMinecraftMods($this->getRecord())) {
             return '';
+        }
+        $world = $this->worldGoesBackNote() !== '' ? ' ' . rtrim($this->worldGoesBackNote()) : '';
+        if ($this->pendingCount() === 0) {
+            return $world;
         }
 
         return ' This also installs the changes waiting on the Mods page: ' . $this->pendingSummary() . '.'
             . ($this->pendingRisk() !== '' ? ' ' . $this->pendingRisk() : '')
+            . $world
             . ($this->installNeedsBackup() ? ($this->getRecord()->backup_limit > 0 ? ' A backup is made first.' : ' This server has no backups, so none is made first.') : '');
     }
 }
