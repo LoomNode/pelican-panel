@@ -76,6 +76,14 @@ function fakeModrinth(): void
             ['id' => 'NEW1', 'version_number' => '6.0.1', 'version_type' => 'release', 'game_versions' => ['1.21.1'], 'loaders' => ['neoforge']],
             ['id' => 'QUILT', 'version_number' => '6.0.1-quilt', 'version_type' => 'release', 'game_versions' => ['1.21.1'], 'loaders' => ['quilt']],
         ]),
+        'api.modrinth.com/v2/project/oldpack/version' => Http::response([
+            ['id' => 'OLDP', 'version_number' => '1.0', 'version_type' => 'release', 'game_versions' => ['1.19.2'], 'loaders' => ['forge']],
+        ]),
+        'api.modrinth.com/v2/tag/game_version' => Http::response([
+            ['version' => '1.21.11', 'version_type' => 'release', 'date' => '2025-12-09T00:00:00Z', 'major' => false],
+            ['version' => '1.21.1', 'version_type' => 'release', 'date' => '2024-08-08T00:00:00Z', 'major' => false],
+            ['version' => '1.19.2', 'version_type' => 'release', 'date' => '2022-08-05T00:00:00Z', 'major' => false],
+        ]),
         // anything else: Modrinth doesn't know it (and no test ever reaches the real one)
         'api.modrinth.com/*' => Http::response([], 404),
     ]);

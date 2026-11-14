@@ -274,6 +274,82 @@ trait ManagesMinecraftMods
     }
 
     /**
+     * The Minecraft version(s) the next install would put on the server, chosen the way the installer chooses;
+     * [] when it stays the same or isn't known. A pack version can list several; the installer uses its index.
+     *
+     * @return string[]
+     */
+    protected function nextMinecraft(): array
+    {
+        $info = $this->installInfo();
+        $pack = $this->wantedPack();
+        if ($pack !== '') {
+            $version = (string) $this->minecraftVariable('MC_MODPACK_VERSION')?->variable_value ?: 'latest';
+            // the installer keeps the installed pack version on "latest" (Update modpack moves it)
+            if ($version === 'latest' && strtolower($pack) === strtolower($info['pack_slug'] ?? '')) {
+                return [];
+            }
+            $versions = collect(self::modrinth('project/' . $pack . '/version') ?? []);
+            $pick = $version === 'latest'
+                ? ($versions->firstWhere('version_type', 'release') ?? $versions->first())
+                : $versions->first(fn ($v) => ($v['version_number'] ?? null) === $version || ($v['id'] ?? null) === $version);
+
+            return array_values(array_filter((array) ($pick['game_versions'] ?? []), 'is_string'));
+        }
+        // read only here: Minecraft version is a Game Settings setting, not one of the mod settings
+        /** @var ?ServerVariable $setting */
+        $setting = $this->getRecord()->serverVariables()
+            ->whereHas('variable', fn (Builder $query) => $query->where('env_variable', 'VANILLA_VERSION'))
+            ->first();
+        $minecraft = (string) $setting?->variable_value ?: 'latest';
+        if ($minecraft === 'latest' || $minecraft === 'snapshot') {
+            $newest = collect(self::modrinth('tag/game_version') ?? [])
+                ->first(fn ($tag) => $minecraft === 'snapshot' || ($tag['version_type'] ?? '') === 'release');
+
+            return $newest ? [(string) $newest['version']] : [];
+        }
+
+        return [$minecraft];
+    }
+
+    /**
+     * [saved by, next] when the next install moves to an older Minecraft than the one that saved the world.
+     * Worlds can't go back, so the installer then keeps the world in its own folder and the server starts a new
+     * one (Kyle 11-14: "go automatic"). null when not, or when the versions aren't known.
+     *
+     * @return array{0: string, 1: string}|null
+     */
+    protected function worldGoesBack(): ?array
+    {
+        $old = $this->installInfo()['minecraft'] ?? '';
+        $next = $this->nextMinecraft();
+        if ($old === '' || $next === [] || in_array($old, $next, true)) {
+            return null;
+        }
+        $dates = collect(self::modrinth('tag/game_version') ?? [])->mapWithKeys(fn ($tag) => [(string) ($tag['version'] ?? '') => (string) ($tag['date'] ?? '')]);
+        if (!$dates->has($old)) {
+            return null;
+        }
+        foreach ($next as $version) {
+            if (!$dates->has($version) || $dates[$version] >= $dates[$old]) {
+                return null;
+            }
+        }
+
+        return [$old, $next[0]];
+    }
+
+    /** The sentence for the install dialogs; '' when the world stays. */
+    protected function worldGoesBackNote(): string
+    {
+        $back = $this->worldGoesBack();
+
+        return $back === null ? '' : 'This goes from Minecraft ' . $back[0] . ' to the older ' . $back[1] . ', and a world can\'t go back to an older version: '
+            . 'your world is kept in its own folder (its name ends in -' . $back[0] . ') and the server starts a new world. '
+            . 'Going back to Minecraft ' . $back[0] . ' later brings it back (Files: rename the folder). ';
+    }
+
+    /**
      * Installs that can take things out of the world back up first. Also when the install record has no
      * mod list yet: then nobody knows what would be removed. A server that was never installed has no world.
      */

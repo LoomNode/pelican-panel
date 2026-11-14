@@ -49,6 +49,8 @@ First made 2026-09-28. Each change is its own commit on `loomnode`; `git log v1.
 - 2026-11-13: Console: the Minecraft start command (its start script packed as base64) shows as one short
   "starting the server" line instead of a wall of text
 - 2026-11-13: Minecraft servers move to the Java image their Minecraft version needs after each install
+- 2026-11-14: Mods page and Reinstall: a change to an older Minecraft version says the world is kept in its own folder
+  and the server starts a new one (worlds can't go back; the egg's installer moves it)
 
 Two of the early changes were reverted before Pelican v1.0.0-rc.2 was merged, because upstream had
 replaced them: the PostgreSQL fix by Pelican's own (#2592), and the America/Chicago schedule change by
