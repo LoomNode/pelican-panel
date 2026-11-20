@@ -20,6 +20,8 @@ use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
 use Filament\Notifications\Notification;
 use Filament\Schemas\Components\Section;
+use Filament\Schemas\Components\Tabs;
+use Filament\Schemas\Components\Tabs\Tab;
 use Filament\Schemas\Components\Utilities\Set;
 use Filament\Schemas\Schema;
 use Illuminate\Database\Eloquent\Builder;
@@ -126,11 +128,11 @@ class Startup extends ServerFormPage
     }
 
     /**
-     * One section of settings per group, in the order the groups first appear, and only the first
-     * open: a name "Group · Setting" puts a setting in Group (EggVariable::groupName). An egg
-     * without groups gets the single Variables section it always had (LoomNode, 2026-11-01).
+     * One tab of settings per group, in the order the groups first appear: a name "Group · Setting"
+     * puts a setting in Group (EggVariable::groupName). An egg without groups gets the single
+     * Variables section it always had (LoomNode, 2026-11-01; tabs instead of fold-out sections 2026-11-20).
      *
-     * @return Section[]
+     * @return array<Section|Tabs>
      */
     protected function variableSections(): array
     {
@@ -148,12 +150,14 @@ class Startup extends ServerFormPage
             ];
         }
 
-        return $groups->values()->map(fn ($variables, int $index) => Section::make($variables->first()->groupName() ?? trans('server/startup.variables'))
-            ->columnSpanFull()
-            ->collapsible()
-            ->collapsed($index > 0)
-            ->schema([$this->variableRepeater('server_variables_' . $index, $variables->pluck('id')->all())])
-        )->all();
+        return [
+            Tabs::make('setting_groups')
+                ->columnSpanFull()
+                ->persistTabInQueryString('group')
+                ->tabs($groups->values()->map(fn ($variables, int $index) => Tab::make($variables->first()->groupName() ?? trans('server/startup.variables'))
+                    ->schema([$this->variableRepeater('server_variables_' . $index, $variables->pluck('id')->all())])
+                )->all()),
+        ];
     }
 
     private bool $variablesChecked = false;
