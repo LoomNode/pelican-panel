@@ -122,7 +122,7 @@ it('splits a grouped variable name into its group and short name', function () {
         ->and($plain->shortName())->toBe('Server Name');
 });
 
-it('shows one section per group, labels without the group, and saves a setting in a closed group', function () {
+it('shows one tab per group, labels without the group, and saves a setting in a closed group', function () {
     [$user, $server] = generateTestAccount([SubuserPermission::StartupRead, SubuserPermission::StartupUpdate]);
     $server->egg->variables()->delete();
     $make = fn (string $name, string $env, int $sort) => $server->egg->variables()->create([
