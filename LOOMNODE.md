@@ -51,6 +51,10 @@ First made 2026-09-28. Each change is its own commit on `loomnode`; `git log v1.
 - 2026-11-13: Minecraft servers move to the Java image their Minecraft version needs after each install
 - 2026-11-14: Mods page and Reinstall: a change to an older Minecraft version says the world is kept in its own folder
   and the server starts a new one (worlds can't go back; the egg's installer moves it)
+- 2026-11-25: Mods page for Don't Starve Together servers: browse and search the game's Steam Workshop, add and
+  remove mods, follow a Workshop collection, see what waits for a restart and restart from the page. Steam's
+  search needs an API key LoomNode doesn't have, so the page reads the public Workshop page; pictures are
+  fetched through the Panel, so browsers don't contact Steam.
 
 Two of the early changes were reverted before Pelican v1.0.0-rc.2 was merged, because upstream had
 replaced them: the PostgreSQL fix by Pelican's own (#2592), and the America/Chicago schedule change by

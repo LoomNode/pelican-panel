@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Base\ModIconController;
+use App\Http\Controllers\Base\WorkshopIconController;
 use App\Http\Controllers\UpdateStatusController;
 use App\Http\Middleware\RedirectIfNotInstalled;
 use App\Livewire\Installer\PanelInstaller;
@@ -17,3 +18,9 @@ Route::get('mod-icon/{project}/{file}', ModIconController::class)
     ->where(['project' => '[A-Za-z0-9]{4,16}', 'file' => '[A-Za-z0-9_-]{1,100}\.(png|jpe?g|webp|gif)'])
     ->middleware(['auth', 'throttle:600,1'])
     ->name('loomnode.mod-icon');
+
+// Steam Workshop pictures for the Don't Starve Together Mods page (LoomNode): the same, from Steam's picture server only.
+Route::get('workshop-icon/{file}/{hash}', WorkshopIconController::class)
+    ->where(['file' => '[0-9]{6,24}', 'hash' => '[A-Fa-f0-9]{16,64}'])
+    ->middleware(['auth', 'throttle:600,1'])
+    ->name('loomnode.workshop-icon');
