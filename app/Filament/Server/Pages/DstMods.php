@@ -548,7 +548,7 @@ class DstMods extends Page implements HasTable
                     ->visible(fn () => $this->activeTab === 'browse'),
                 SelectFilter::make('sort')
                     ->label('Sort by')
-                    ->placeholder(fn () => 'Most subscribed (best match when searching)')
+                    ->placeholder('Most subscribed')
                     ->options(array_slice(self::SORTS, 1, null, true))
                     ->visible(fn () => $this->activeTab === 'browse'),
             ], layout: FiltersLayout::AboveContent)
@@ -766,7 +766,7 @@ class DstMods extends Page implements HasTable
         $text = (string) preg_replace('#https?://\S+#', ' ', $text);
         $text = trim((string) preg_replace('/\s+/u', ' ', $text));
 
-        return mb_strlen($text) > 200 ? rtrim(mb_substr($text, 0, 197)) . '…' : $text;
+        return mb_strlen($text) > 140 ? rtrim(mb_substr($text, 0, 137)) . '…' : $text;
     }
 
     private static function iconUrl(string $url): ?string
