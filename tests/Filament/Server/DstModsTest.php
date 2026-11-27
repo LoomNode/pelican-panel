@@ -10,6 +10,7 @@ use App\Repositories\Daemon\DaemonServerRepository;
 use Filament\Facades\Filament;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Sleep;
 
 use function Pest\Livewire\livewire;
 
@@ -414,4 +415,519 @@ it('says the list is full instead of saving a list the setting can\'t hold', fun
 
     livewire(DstMods::class)->callAction('addByLink', ['mods' => HEALTH])->assertNotified('The mod list is full');
     expect(dstValue($server, 'DST_MODS'))->toBe($full);
+});
+
+// ---- Options tab ---------------------------------------------------------------------------------------
+
+const OPTIONS_RULE = '/^([0-9]{1,12}:[0-9a-f]{2,400}:(n-?[0-9]+(\.[0-9]+)?|b[01]|s[0-9a-f]{0,800})(;|\z))*\z/';
+const OPTIONS_PATH = '/DoNotStarveTogether/config/world/Master/save/loomnode_mod_options';
+
+/** A server whose egg also has the hidden options setting. */
+function dstOptionsServer(Server $server, array $values = [], array $more = []): Server
+{
+    foreach (['DST_MOD_OPTIONS' => ['nullable', 'string', 'max:60000', 'regex:' . OPTIONS_RULE]] + $more as $env => $rule) {
+        EggVariable::query()->create([
+            'egg_id' => $server->egg_id, 'name' => $env, 'description' => '', 'env_variable' => $env,
+            'default_value' => '', 'user_viewable' => false, 'user_editable' => false, 'rules' => $rule, 'sort' => 60,
+        ]);
+    }
+
+    return dstServer($server, $values);
+}
+
+/** The file the game writes: two mods with options, as the real game writes them. */
+function dstOptionsFile(array $more = []): string
+{
+    return 'KLEI     1 ' . json_encode($more + [
+        'workshop-' . POSITIONS => ['name' => 'Global Positions', 'version' => '1.7.6', 'options' => [
+            ['name' => 'SHOWPLAYERSOPTIONS', 'label' => 'Player Indicators', 'hover' => "The arrow things\nat the edge of the screen.", 'default' => 2, 'options' => [
+                ['description' => 'Always', 'data' => 3], ['description' => 'Scoreboard', 'data' => 2, 'hover' => 'x'], ['description' => 'Never', 'data' => 1],
+            ]],
+            ['name' => 'SHOWPLAYERICONS', 'label' => 'Player Icons', 'hover' => 'Icons on the map.', 'default' => true, 'options' => [
+                ['description' => 'Show', 'data' => true], ['description' => 'Hide', 'data' => false],
+            ]],
+            ['name' => '', 'label' => 'A heading in the game', 'default' => 0, 'options' => [['description' => '', 'data' => 0]]],
+        ]],
+        'workshop-' . HEALTH => ['name' => 'Health <script>alert(1)</script>', 'version' => '2.2.04', 'options' => [
+            ['name' => 'random_health_value', 'label' => 'Chance Fluctuation', 'default' => 0, 'options' => [
+                ['description' => '0%', 'data' => 0], ['description' => '5%', 'data' => 0.05],
+            ]],
+            ['name' => 'say "it"; a:b', 'default' => 'plain', 'options' => [
+                ['description' => 'Plain', 'data' => 'plain'], ['description' => 'Fancy', 'data' => 'ünï "q"; a:b'],
+            ]],
+        ]],
+        'workshop-' . MINIMAP => ['name' => 'Minimap HUD', 'version' => '1', 'options' => new stdClass()],
+    ]);
+}
+
+/**
+ * The node for a server with the Options tab: the start script's file, the game's options file (null: not
+ * there), and whether the game writes it again when sent the command.
+ */
+function dstGame(array $mods, string $state = 'running', ?string $file = null, bool $answers = true, int $uptime = 600): void
+{
+    Sleep::fake();
+    $setup = "-- Written by LoomNode\n" . implode('', array_map(fn ($id) => "ServerModSetup(\"$id\")\n", $mods));
+    test()->mock(DaemonFileRepository::class, function ($mock) use ($setup, $file, $answers) {
+        $lists = 0;
+        $mock->shouldReceive('setServer')->andReturnSelf();
+        $mock->shouldReceive('getContent')->with('mods/dedicated_server_mods_setup.lua', 65536)->andReturn($setup);
+        $content = $mock->shouldReceive('getContent')->with(OPTIONS_PATH, 2097152);
+        $file === null ? $content->andThrow(new Exception('no such file')) : $content->andReturn($file);
+        // the first look is before the command; the file is new after it when the game answers
+        $mock->shouldReceive('getDirectory')->with('/DoNotStarveTogether/config/world/Master/save')->andReturnUsing(function () use (&$lists, $file, $answers) {
+            $new = $answers && $lists++ > 0;
+
+            return $file === null ? [] : [['name' => 'session', 'modified' => 'a'], ['name' => 'loomnode_mod_options', 'modified' => $new ? 'later' : 'before', 'size' => 10]];
+        });
+    });
+    test()->mock(DaemonServerRepository::class, function ($mock) use ($state, $uptime) {
+        $mock->shouldReceive('setServer')->andReturnSelf();
+        $mock->shouldReceive('getDetails')->andReturn(['state' => $state, 'utilization' => ['uptime' => $uptime * 1000]]);
+    });
+    // before fakeSteam(): the first match answers
+    Http::fake(['*/api/servers/*/commands' => Http::response('', 204)]);
+    fakeSteam();
+}
+
+function hexOption(string $id, string $name, string $token): string
+{
+    return $id . ':' . bin2hex($name) . ':' . $token;
+}
+
+function commandSent(): Closure
+{
+    return fn ($request) => str_contains($request->url(), '/commands') && $request->data() === ['commands' => [DstMods::OPTIONS_COMMAND]];
+}
+
+it('stores mod options in one line and reads them back', function () {
+    $choices = [
+        POSITIONS => ['SHOWPLAYERSOPTIONS' => 3, 'SHOWPLAYERICONS' => false],
+        '99' => ['f' => 0.05, 'tiny' => 1.0E-7, 'big' => -2.5E+3, 'whole' => 3.0, 'on' => true, 'text' => 'ünï "q"; a:b \'x\'', 'empty' => '', '12' => 7],
+    ];
+    $stored = DstMods::encodeOptions($choices);
+
+    expect($stored)->toBe(implode(';', [
+        hexOption('99', 'f', 'n0.05'), hexOption('99', 'tiny', 'n0.0000001'), hexOption('99', 'big', 'n-2500'), hexOption('99', 'whole', 'n3'),
+        hexOption('99', 'on', 'b1'), hexOption('99', 'text', 's' . bin2hex('ünï "q"; a:b \'x\'')), hexOption('99', 'empty', 's'), hexOption('99', '12', 'n7'),
+        '378160973:53484f57504c41594552534f5054494f4e53:n3;378160973:53484f57504c4159455249434f4e53:b0',
+    ]))
+        ->and(preg_match(OPTIONS_RULE, $stored))->toBe(1)
+        ->and(strpbrk($stored, "\"' \n\\"))->toBeFalse();
+
+    $back = DstMods::decodeOptions($stored);
+    expect($back[POSITIONS])->toBe(['SHOWPLAYERSOPTIONS' => 3, 'SHOWPLAYERICONS' => false])
+        ->and($back['99'])->toBe(['f' => 0.05, 'tiny' => 1.0E-7, 'big' => -2500, 'whole' => 3, 'on' => true, 'text' => 'ünï "q"; a:b \'x\'', 'empty' => '', 12 => 7])
+        ->and(DstMods::encodeOptions($back))->toBe($stored);
+
+    // what can't be stored is left out
+    expect(DstMods::encodeOptions(['abc' => ['a' => 1], '1234567890123' => ['a' => 1], '5' => ['a' => null, 'b' => [1], 'c' => INF, 'd' => NAN, str_repeat('n', 201) => 1, 'e' => str_repeat('x', 401), 'ok' => 1.5]]))
+        ->toBe(hexOption('5', 'ok', 'n1.5'));
+
+    // a long value still passes the setting's rule
+    $long = DstMods::encodeOptions(['7' => array_combine(array_map(fn ($n) => 'option_' . $n, range(1, 1300)), array_fill(0, 1300, 'some text'))]);
+    expect(strlen($long))->toBeGreaterThan(50000)->toBeLessThan(60000)
+        ->and(preg_match(OPTIONS_RULE, $long))->toBe(1)
+        ->and(DstMods::decodeOptions($long)['7'])->toHaveCount(1300);
+});
+
+it('reads a stored options value that is broken as empty', function (string $stored) {
+    expect(DstMods::decodeOptions($stored))->toBe([]);
+})->with([
+    'words' => 'not options at all',
+    'odd hex' => '5:abc:n1',
+    'no value' => '5:6162:',
+    'exponent' => '5:6162:n1e5',
+    'one bad entry' => '5:6162:n1;5:6163:x9',
+    'empty entry' => '5:6162:n1;;5:6163:n2',
+    'upper case hex' => '5:6A62:n1',
+    'line break' => "5:6162:n1\n",
+    'too long' => str_repeat('5:6162:n1;', 6001),
+]);
+
+it('takes only what it understands from the game\'s options file', function () {
+    expect(DstMods::parseOptionsFile('KLEI     1 ERR something'))->toBeNull()
+        ->and(DstMods::parseOptionsFile('KLEI     1 {"workshop-1": '))->toBeNull()
+        ->and(DstMods::parseOptionsFile('KLEI     1 ' . json_encode(['workshop-1' => ['name' => str_repeat('x', 2100000)]])))->toBeNull()
+        ->and(DstMods::parseOptionsFile('KLEI     1 {}'))->toBe([]);
+
+    $mods = DstMods::parseOptionsFile(dstOptionsFile([
+        'workshop-1' => 'a string',
+        'workshop-2' => ['name' => ['x'], 'version' => 7, 'options' => 'none'],
+        'workshop-3' => ['name' => str_repeat('é', 300), 'options' => ['a' => ['name' => 'x', 'default' => 1, 'options' => [['data' => 1]]]]],
+        'not-a-mod' => ['name' => 'x', 'options' => []],
+        'workshop-12345678901234' => ['name' => 'x', 'options' => []],
+        'workshop-4' => ['options' => [
+            'text',
+            ['name' => 'no_default', 'options' => [['data' => 1]]],
+            ['name' => 'list_default', 'default' => [1], 'options' => [['data' => 1]]],
+            ['name' => 'no_choices', 'default' => 1, 'options' => []],
+            ['name' => 'object_choices', 'default' => 1, 'options' => ['a' => ['data' => 1]]],
+            ['name' => ['x'], 'default' => 1, 'options' => [['data' => 1]]],
+            ['name' => 'only_bad_choices', 'default' => 1, 'options' => [['data' => null], ['data' => [1]], 'x', ['description' => 'nothing']]],
+            ['name' => 'good', 'label' => ['x'], 'hover' => str_repeat("h\n", 600), 'default' => 1.0, 'options' => [
+                ['data' => 1, 'description' => str_repeat('d', 300)], ['data' => null], ['data' => 'two', 'description' => 5], ['data' => false], ['data' => 2.5],
+            ]],
+            ['name' => 'good', 'default' => 1, 'options' => [['data' => 1]]],
+            ['name' => 'many', 'default' => 0, 'options' => array_map(fn ($n) => ['data' => $n], range(0, 249))],
+        ]],
+        'workshop-5' => ['name' => 'Lots', 'options' => array_map(fn ($n) => ['name' => 'o' . $n, 'default' => 1, 'options' => [['data' => 1]]], range(1, 350))],
+    ]));
+
+    expect(array_keys($mods))->toBe([2, 3, 4, 5, (int) POSITIONS, (int) HEALTH, (int) MINIMAP])
+        ->and($mods[2])->toBe(['name' => 'Mod 2', 'version' => '7', 'options' => []])
+        ->and(mb_strlen($mods[3]['name']))->toBe(200)
+        ->and($mods[3]['options'])->toBe([])
+        ->and($mods[MINIMAP]['options'])->toBe([])
+        ->and(array_column($mods[4]['options'], 'name'))->toBe(['good', 'many'])
+        ->and($mods[4]['options'][0]['label'])->toBe('good')
+        ->and($mods[4]['options'][0]['default'])->toBe('n1')
+        ->and(strlen($mods[4]['options'][0]['hover']))->toBe(500)
+        ->and($mods[4]['options'][0]['hover'])->not->toContain("\n")
+        ->and(array_column($mods[4]['options'][0]['choices'], 'token'))->toBe(['n1', 's' . bin2hex('two'), 'b0', 'n2.5'])
+        ->and(array_column($mods[4]['options'][0]['choices'], 'label'))->toBe([str_repeat('d', 200), '5', 'No', '2.5'])
+        ->and($mods[4]['options'][1]['choices'])->toHaveCount(200)
+        ->and($mods[5]['options'])->toHaveCount(300)
+        ->and(array_column($mods[POSITIONS]['options'], 'label'))->toBe(['Player Indicators', 'Player Icons'])
+        ->and($mods[HEALTH]['options'][1]['label'])->toBe('say "it"; a:b');
+
+    $many = [];
+    foreach (range(1, 250) as $n) {
+        $many['workshop-' . $n] = ['name' => 'M' . $n];
+    }
+    expect(DstMods::parseOptionsFile('KLEI     1 ' . json_encode($many)))->toHaveCount(200);
+});
+
+it('has no Options tab for an egg without the options setting, and asks the game nothing', function () {
+    [$user, $server] = generateTestAccount();
+    dstServer($server, ['DST_MODS' => POSITIONS]);
+    dstGame([POSITIONS], 'running', dstOptionsFile());
+    $this->actingAs($user);
+    Filament::setTenant($server);
+
+    livewire(DstMods::class)
+        ->assertDontSeeHtml('tabler-adjustments')
+        ->assertSee('I set up mod options myself')
+        ->set('activeTab', 'options')
+        ->assertSet('activeTab', 'browse')
+        ->assertDontSee('Player Indicators');
+
+    Http::assertNotSent(commandSent());
+});
+
+it('asks the running game for its mods\' options and shows them as dropdowns', function () {
+    [$user, $server] = generateTestAccount();
+    dstOptionsServer($server, ['DST_MODS' => POSITIONS . ',' . HEALTH . ',' . MINIMAP . ',' . QUICK_PICK, 'DST_MOD_OPTIONS' => hexOption(HEALTH, 'random_health_value', 'n0.05')]);
+    dstGame([POSITIONS, HEALTH, MINIMAP], 'running', dstOptionsFile());
+    $this->actingAs($user);
+    Filament::setTenant($server);
+
+    $page = livewire(DstMods::class)
+        ->assertSeeHtml('tabler-adjustments')
+        ->assertDontSee('I set up mod options myself')
+        ->assertDontSee('Player Indicators');
+    Http::assertNotSent(commandSent());
+
+    $page->set('activeTab', 'options')
+        ->assertSee('Global Positions')
+        ->assertSee('Player Indicators')
+        ->assertSee('The arrow things at the edge of the screen.')
+        ->assertSee('Always')
+        ->assertSee('Scoreboard (default)')
+        ->assertSee('Show (default)')
+        ->assertSee('Chance Fluctuation')
+        ->assertSee('say "it"; a:b')
+        ->assertSee('Health <script>alert(1)</script>')
+        ->assertDontSee('<script>alert(1)</script>', false)
+        ->assertDontSee('A heading in the game')
+        ->assertDontSee('Minimap HUD')
+        ->assertDontSee('last time the server ran')
+        ->assertSee('Quick Pick: restart the server once so it downloads; its options show here after that.')
+        ->assertSet('optionsData.m' . POSITIONS, ['o0' => 'c1', 'o1' => 'c0'])
+        ->assertSet('optionsData.m' . HEALTH, ['o0' => 'c1', 'o1' => 'c0'])
+        ->assertActionVisible('saveOptions');
+    Http::assertSentCount(2); // the command, and Steam for Quick Pick's name
+    Http::assertSent(commandSent());
+
+    // kept: the tab again asks nothing
+    $page->set('activeTab', 'yours')->set('activeTab', 'options')->assertSee('Player Indicators');
+    expect(Http::recorded(commandSent()))->toHaveCount(1);
+
+    // Refresh asks again
+    $page->callAction('refreshOptions');
+    expect(Http::recorded(commandSent()))->toHaveCount(2);
+});
+
+it('saves only the choices that differ from a mod\'s default, and they wait for a restart', function () {
+    [$user, $server] = generateTestAccount();
+    dstOptionsServer($server, ['DST_MODS' => POSITIONS . ',' . HEALTH]);
+    dstGame([POSITIONS, HEALTH], 'running', dstOptionsFile());
+    $this->actingAs($user);
+    Filament::setTenant($server);
+
+    $page = livewire(DstMods::class)->set('activeTab', 'options')
+        ->callAction('saveOptions')
+        ->assertNotified('Nothing to save')
+        ->assertDontSee('waiting for a restart');
+    expect(dstValue($server, 'DST_MOD_OPTIONS'))->toBe('');
+
+    $page->set('optionsData.m' . POSITIONS . '.o0', 'c0')
+        ->set('optionsData.m' . POSITIONS . '.o1', 'c1')
+        ->set('optionsData.m' . HEALTH . '.o1', 'c1')
+        ->callAction('saveOptions')
+        ->assertNotified('Mod options saved')
+        ->assertSee('1 change waiting for a restart')
+        ->assertSee('Mod options changed')
+        ->assertActionVisible('restart');
+
+    $stored = dstValue($server, 'DST_MOD_OPTIONS');
+    expect($stored)->toBe(implode(';', [
+        hexOption(HEALTH, 'say "it"; a:b', 's' . bin2hex('ünï "q"; a:b')),
+        hexOption(POSITIONS, 'SHOWPLAYERSOPTIONS', 'n3'),
+        hexOption(POSITIONS, 'SHOWPLAYERICONS', 'b0'),
+    ]))->and(preg_match(OPTIONS_RULE, $stored))->toBe(1);
+
+    // a new page shows the saved choices, and the change still waits
+    $again = livewire(DstMods::class)
+        ->assertSee('Mod options changed')
+        ->set('activeTab', 'options')
+        ->assertSet('optionsData.m' . POSITIONS, ['o0' => 'c0', 'o1' => 'c1'])
+        ->assertSet('optionsData.m' . HEALTH, ['o0' => 'c0', 'o1' => 'c1']);
+
+    // back to the defaults, as the server started: nothing stored, nothing waiting
+    $again->set('optionsData.m' . POSITIONS . '.o0', 'c1')
+        ->set('optionsData.m' . POSITIONS . '.o1', 'c0')
+        ->set('optionsData.m' . HEALTH . '.o1', 'c0')
+        ->callAction('saveOptions')
+        ->assertDontSee('waiting for a restart');
+    expect(dstValue($server, 'DST_MOD_OPTIONS'))->toBe('');
+});
+
+it('stops saying the options wait once the server has started again', function () {
+    [$user, $server] = generateTestAccount();
+    dstOptionsServer($server, ['DST_MODS' => POSITIONS]);
+    dstGame([POSITIONS], 'running', dstOptionsFile());
+    $this->actingAs($user);
+    Filament::setTenant($server);
+
+    livewire(DstMods::class)->set('activeTab', 'options')
+        ->set('optionsData.m' . POSITIONS . '.o0', 'c2')
+        ->callAction('saveOptions')
+        ->assertSee('Mod options changed');
+
+    $this->travel(5)->minutes();
+    livewire(DstMods::class)->assertSee('Mod options changed');
+
+    // 20 minutes on, the node says the server has been up for 10: it started after the change
+    $this->travel(15)->minutes();
+    livewire(DstMods::class)->assertDontSee('waiting for a restart');
+    expect(dstValue($server, 'DST_MOD_OPTIONS'))->toBe(hexOption(POSITIONS, 'SHOWPLAYERSOPTIONS', 'n1'));
+});
+
+it('ignores a choice the mod doesn\'t offer', function () {
+    [$user, $server] = generateTestAccount();
+    $saved = hexOption(POSITIONS, 'SHOWPLAYERICONS', 'b0');
+    dstOptionsServer($server, ['DST_MODS' => POSITIONS, 'DST_MOD_OPTIONS' => $saved]);
+    dstGame([POSITIONS], 'running', dstOptionsFile());
+    $this->actingAs($user);
+    Filament::setTenant($server);
+
+    livewire(DstMods::class)->set('activeTab', 'options')
+        ->set('optionsData.m' . POSITIONS . '.o0', 'c7')
+        ->set('optionsData.m' . POSITIONS . '.o1', '0); os.execute("x") --')
+        ->set('optionsData.m' . POSITIONS . '.o9', 'c0')
+        ->set('optionsData.m' . QUICK_PICK . '.o0', 'c0')
+        ->set('optionsData.m' . POSITIONS . '.o0', ['c0'])
+        ->callAction('saveOptions');
+
+    expect(dstValue($server, 'DST_MOD_OPTIONS'))->toBe($saved);
+});
+
+it('keeps what is saved for a mod whose options aren\'t known, and drops it for a mod that is gone', function () {
+    [$user, $server] = generateTestAccount();
+    $unknown = hexOption(QUICK_PICK, 'speed', 'n2');
+    dstOptionsServer($server, ['DST_MODS' => POSITIONS . ',' . QUICK_PICK, 'DST_MOD_OPTIONS' => hexOption(GONE, 'x', 'b1') . ';' . hexOption(POSITIONS, 'old_option', 'n9') . ';' . $unknown]);
+    dstGame([POSITIONS], 'running', dstOptionsFile());
+    $this->actingAs($user);
+    Filament::setTenant($server);
+
+    livewire(DstMods::class)->set('activeTab', 'options')
+        ->set('optionsData.m' . POSITIONS . '.o0', 'c0')
+        ->callAction('saveOptions')
+        ->assertNotified('Mod options saved');
+
+    expect(dstValue($server, 'DST_MOD_OPTIONS'))->toBe(hexOption(POSITIONS, 'SHOWPLAYERSOPTIONS', 'n3') . ';' . $unknown);
+});
+
+it('shows defaults when the stored options are broken, and saving puts them right', function () {
+    [$user, $server] = generateTestAccount();
+    dstOptionsServer($server, ['DST_MODS' => POSITIONS, 'DST_MOD_OPTIONS' => 'return { broken = true }']);
+    dstGame([POSITIONS], 'running', dstOptionsFile());
+    $this->actingAs($user);
+    Filament::setTenant($server);
+
+    livewire(DstMods::class)->set('activeTab', 'options')
+        ->assertSet('optionsData.m' . POSITIONS, ['o0' => 'c1', 'o1' => 'c0'])
+        ->set('optionsData.m' . POSITIONS . '.o1', 'c1')
+        ->callAction('saveOptions');
+
+    expect(dstValue($server, 'DST_MOD_OPTIONS'))->toBe(hexOption(POSITIONS, 'SHOWPLAYERICONS', 'b0'));
+});
+
+it('refuses to save more options than the setting holds', function () {
+    [$user, $server] = generateTestAccount();
+    $full = DstMods::encodeOptions([QUICK_PICK => array_combine(array_map(fn ($n) => 'option_' . $n, range(1, 72)), array_fill(0, 72, str_repeat('x', 400))) + ['last' => str_repeat('x', 64)]]);
+    dstOptionsServer($server, ['DST_MODS' => POSITIONS . ',' . QUICK_PICK, 'DST_MOD_OPTIONS' => $full]);
+    dstGame([POSITIONS], 'running', dstOptionsFile());
+    $this->actingAs($user);
+    Filament::setTenant($server);
+
+    expect(strlen($full))->toBeGreaterThan(59950)->toBeLessThanOrEqual(60000);
+    livewire(DstMods::class)->set('activeTab', 'options')
+        ->set('optionsData.m' . POSITIONS . '.o0', 'c0')
+        ->set('optionsData.m' . POSITIONS . '.o1', 'c1')
+        ->callAction('saveOptions')
+        ->assertNotified('Too many options to save');
+
+    expect(dstValue($server, 'DST_MOD_OPTIONS'))->toBe($full);
+});
+
+it('drops a mod\'s saved options when the mod is removed', function () {
+    [$user, $server] = generateTestAccount();
+    $kept = hexOption(HEALTH, 'random_health_value', 'n0.05');
+    dstOptionsServer($server, ['DST_MODS' => POSITIONS . ',' . HEALTH, 'DST_MOD_OPTIONS' => $kept . ';' . hexOption(POSITIONS, 'SHOWPLAYERSOPTIONS', 'n3') . ';' . hexOption(POSITIONS, 'SHOWPLAYERICONS', 'b0')]);
+    dstGame([POSITIONS, HEALTH], 'running', dstOptionsFile());
+    $this->actingAs($user);
+    Filament::setTenant($server);
+
+    livewire(DstMods::class)->set('activeTab', 'yours')->loadTable()
+        ->callTableAction('remove', 'w' . POSITIONS)
+        ->assertSee('1 change waiting for a restart')
+        ->assertDontSee('options changed');
+
+    expect(dstValue($server, 'DST_MODS'))->toBe(HEALTH)
+        ->and(dstValue($server, 'DST_MOD_OPTIONS'))->toBe($kept);
+});
+
+it('never sends the command to a server that isn\'t running', function (string $state, string $heading) {
+    [$user, $server] = generateTestAccount();
+    dstOptionsServer($server, ['DST_MODS' => POSITIONS]);
+    dstGame([POSITIONS], $state);
+    $this->actingAs($user);
+    Filament::setTenant($server);
+
+    livewire(DstMods::class)->set('activeTab', 'options')
+        ->assertSee($heading)
+        ->assertDontSee('Player Indicators')
+        ->callAction('refreshOptions')
+        ->assertSee($heading);
+
+    Http::assertNotSent(commandSent());
+})->with([
+    ['offline', 'Start the server to see its mods\' options'],
+    ['stopping', 'Start the server to see its mods\' options'],
+    ['starting', 'The server is still starting'],
+]);
+
+it('shows a stopped server\'s options from the file its last run left, and saves them', function () {
+    [$user, $server] = generateTestAccount();
+    dstOptionsServer($server, ['DST_MODS' => POSITIONS . ',' . QUICK_PICK]);
+    dstGame([POSITIONS], 'offline', dstOptionsFile());
+    $this->actingAs($user);
+    Filament::setTenant($server);
+
+    livewire(DstMods::class)->set('activeTab', 'options')
+        ->assertSee('These options are from the last time the server ran.')
+        ->assertSee('Player Indicators')
+        ->assertSee('Quick Pick: start the server once so it downloads; its options show here after that.')
+        ->set('optionsData.m' . POSITIONS . '.o0', 'c2')
+        ->callAction('saveOptions')
+        ->assertNotified('Mod options saved')
+        ->assertSee('2 changes waiting for a restart')
+        ->assertSee('1 mod to add, mod options changed')
+        ->callAction('refreshOptions')
+        ->assertSee('Player Indicators');
+
+    expect(dstValue($server, 'DST_MOD_OPTIONS'))->toBe(hexOption(POSITIONS, 'SHOWPLAYERSOPTIONS', 'n1'));
+    Http::assertNotSent(commandSent());
+});
+
+it('falls back to the file from an earlier run when the running game doesn\'t answer', function () {
+    [$user, $server] = generateTestAccount();
+    dstOptionsServer($server, ['DST_MODS' => POSITIONS]);
+    dstGame([POSITIONS], 'running', dstOptionsFile(), answers: false);
+    $this->actingAs($user);
+    Filament::setTenant($server);
+
+    livewire(DstMods::class)->set('activeTab', 'options')
+        ->assertSee('The game didn\'t answer just now')
+        ->assertSee('Player Indicators');
+    Http::assertSent(commandSent());
+    Sleep::assertSleptTimes(8);
+});
+
+it('says so when the running game has no answer and no file', function () {
+    [$user, $server] = generateTestAccount();
+    dstOptionsServer($server, ['DST_MODS' => POSITIONS]);
+    dstGame([POSITIONS], 'running', null);
+    $this->actingAs($user);
+    Filament::setTenant($server);
+
+    livewire(DstMods::class)->set('activeTab', 'options')->assertSee('The game didn\'t answer');
+});
+
+it('says when the mods are new and when none has options', function () {
+    [$user, $server] = generateTestAccount();
+    dstOptionsServer($server, ['DST_MODS' => QUICK_PICK]);
+    dstGame([], 'running', dstOptionsFile());
+    $this->actingAs($user);
+    Filament::setTenant($server);
+
+    livewire(DstMods::class)->set('activeTab', 'options')
+        ->assertSee('Restart the server once so the new mods load; their options show here after that')
+        ->assertDontSee('Player Indicators');
+
+    $server->serverVariables()->whereHas('variable', fn ($q) => $q->where('env_variable', 'DST_MODS'))->update(['variable_value' => MINIMAP]);
+    livewire(DstMods::class)->set('activeTab', 'options')->assertSee('None of this server\'s mods have options');
+});
+
+it('reads the options file from the server\'s own world folder, and not from a path that isn\'t a plain name', function (string $world, bool $read) {
+    [$user, $server] = generateTestAccount();
+    dstOptionsServer($server, ['DST_MODS' => POSITIONS, 'DST_WORLD' => $world], ['DST_WORLD' => ['nullable', 'string']]);
+    Sleep::fake();
+    $this->mock(DaemonFileRepository::class, function ($mock) use ($read) {
+        $mock->shouldReceive('setServer')->andReturnSelf();
+        $mock->shouldReceive('getContent')->with('mods/dedicated_server_mods_setup.lua', 65536)->andReturn('');
+        $mock->shouldReceive('getContent')->with('/DoNotStarveTogether/config/My-World_2/Master/save/loomnode_mod_options', 2097152)->times($read ? 1 : 0)->andReturn(dstOptionsFile());
+    });
+    $this->mock(DaemonServerRepository::class, function ($mock) {
+        $mock->shouldReceive('setServer')->andReturnSelf();
+        $mock->shouldReceive('getDetails')->andReturn(['state' => 'offline']);
+    });
+    fakeSteam();
+    $this->actingAs($user);
+    Filament::setTenant($server);
+
+    livewire(DstMods::class)->set('activeTab', 'options')->assertSee($read ? 'Player Indicators' : 'Start the server to see its mods\' options');
+})->with([
+    ['My-World_2', true],
+    ['../../My-World_2', false],
+    ['-World', false],
+]);
+
+it('shows a subuser without the rights the options, but saves nothing for them', function () {
+    [$user, $server] = generateTestAccount([SubuserPermission::StartupRead]);
+    dstOptionsServer($server, ['DST_MODS' => POSITIONS]);
+    dstGame([POSITIONS], 'running', dstOptionsFile());
+    $this->actingAs($user);
+    Filament::setTenant($server);
+
+    livewire(DstMods::class)->set('activeTab', 'options')
+        ->assertSee('Player Indicators')
+        ->assertSeeHtml('disabled="disabled" id="content.modOptions.optionsm' . POSITIONS . '.m' . POSITIONS . '.o0" wire:model="optionsData.m' . POSITIONS . '.o0"')
+        ->assertActionHidden('saveOptions')
+        ->set('optionsData.m' . POSITIONS . '.o0', 'c0')
+        ->assertActionHidden('saveOptions');
+
+    expect(dstValue($server, 'DST_MOD_OPTIONS'))->toBe('');
 });
