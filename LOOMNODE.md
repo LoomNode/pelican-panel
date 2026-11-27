@@ -4,14 +4,14 @@ This is a modified version of [Pelican Panel](https://github.com/pelican/panel),
 [LoomNode](https://loomnode.cloud) as the game panel at panel.loomnode.cloud. It is licensed,
 like Pelican, under the GNU Affero General Public License v3.0 only (see LICENSE).
 
-- **Branch `loomnode`**: Pelican plus LoomNode's changes. It currently builds on Pelican v1.0.0-rc.2.
+- **Branch `loomnode`**: Pelican plus LoomNode's changes. It currently builds on Pelican v1.0.0-rc.4 (since 2026-11-27, live as `loomnode-1.0.0-rc.4.1`).
 - **Tags `loomnode-<pelican version>.<n>`**: the exact code of each build that ran on panel.loomnode.cloud.
   The Panel's footer links to the tag that is running.
 - `main` is upstream Pelican, untouched.
 
 ## What LoomNode changed
 
-First made 2026-09-28. Each change is its own commit on `loomnode`; `git log v1.0.0-rc.2..loomnode` shows them all.
+First made 2026-09-28. Each change is its own commit on `loomnode`; `git log v1.0.0-rc.4..loomnode-1.0.0-rc.4.1` shows them all as they stand on rc.4 (they were rebased onto it; the branch itself moved there with one merge commit, so its older history, on rc.2 and before, is kept).
 
 - 2026-09-28: Fix backup/database creation on PostgreSQL
 - 2026-09-28: Evaluate schedule cron expressions in America/Chicago
