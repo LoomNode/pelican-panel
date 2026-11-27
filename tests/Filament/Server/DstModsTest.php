@@ -938,7 +938,22 @@ it('shows a subuser without the rights the options, but saves nothing for them',
         ->assertSeeHtml('disabled="disabled" id="content.modOptions.optionsm' . POSITIONS . '.m' . POSITIONS . '.o0" wire:model="optionsData.m' . POSITIONS . '.o0"')
         ->assertActionHidden('saveOptions')
         ->set('optionsData.m' . POSITIONS . '.o0', 'c0')
-        ->assertActionHidden('saveOptions');
+        ->assertActionHidden('saveOptions')
+        ->assertSee('These options are from the last time they were read.')
+        ->callAction('refreshOptions');
 
     expect(dstValue($server, 'DST_MOD_OPTIONS'))->toBe('');
+    Http::assertNotSent(commandSent());   // looking never sends the game anything
+});
+
+it('tells a subuser without the rights when nobody has read the options yet', function () {
+    [$user, $server] = generateTestAccount([SubuserPermission::StartupRead]);
+    dstOptionsServer($server, ['DST_MODS' => POSITIONS]);
+    dstGame([POSITIONS], 'running', null);
+    $this->actingAs($user);
+    Filament::setTenant($server);
+
+    livewire(DstMods::class)->set('activeTab', 'options')
+        ->assertSee('The mods\' options haven\'t been read yet');
+    Http::assertNotSent(commandSent());
 });
