@@ -7,6 +7,7 @@ use App\Filament\Admin\Resources\Eggs\Pages\EditEgg;
 use App\Filament\Admin\Resources\Nodes\Pages\EditNode;
 use App\Filament\Admin\Resources\Servers\ServerResource;
 use App\Filament\Admin\Resources\Users\Pages\EditUser;
+use App\Filament\Components\Actions\CreateServerFromBackupAction;
 use App\Filament\Components\Actions\ViewConsoleAction;
 use App\Models\Server;
 use App\Traits\Filament\CanCustomizeHeaderActions;
@@ -37,6 +38,14 @@ class ListServers extends ListRecords
                 Group::make('user.username')->getDescriptionFromRecordUsing(fn (Server $server) => $server->user->email),
                 Group::make('egg.name')->getDescriptionFromRecordUsing(fn (Server $server) => str($server->egg->description)->limit(150)),
             ])
+            ->modifyQueryUsing(fn (Builder $query) => $query->with([
+                'allocations',
+                'egg',
+                'node',
+                'user.roles',
+                // ViewConsoleAction only looks for the viewer's own subuser.
+                'subusers' => fn ($query) => $query->where('user_id', user()?->id),
+            ]))
             ->columns([
                 TextColumn::make('condition')
                     ->label(trans('admin/server.condition'))
@@ -108,6 +117,8 @@ class ListServers extends ListRecords
             ])
             ->toolbarActions([
                 CreateAction::make(),
+                CreateServerFromBackupAction::make()
+                    ->hiddenLabel(),
             ])
             ->searchable()
             ->emptyStateIcon(TablerIcon::BrandDocker)

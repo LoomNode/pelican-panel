@@ -33,6 +33,14 @@ class Startup extends ServerFormPage
 
     protected static ?int $navigationSort = 10;
 
+    public function mount(): void
+    {
+        // Once per page load, not every time the variables repeater builds its query.
+        $this->getRecord()->ensureVariablesExist();
+
+        parent::mount();
+    }
+
     /**
      * @throws Exception
      */
@@ -62,6 +70,7 @@ class Startup extends ServerFormPage
                     ->formatStateUsing(fn (Server $server) => $server->startup)
                     ->afterStateUpdated(function ($state, Server $server, Set $set) {
                         abort_unless(user()?->can(SubuserPermission::StartupUpdate, $server), 403);
+                        abort_unless(in_array($state, $server->egg->startup_commands, true), 422);
                         $original = $server->startup;
                         $server->forceFill(['startup' => $state])->saveOrFail();
 
@@ -97,6 +106,7 @@ class Startup extends ServerFormPage
                     ->disabled(fn (Server $server) => !user()?->can(SubuserPermission::StartupDockerImage, $server))
                     ->afterStateUpdated(function ($state, Server $server) {
                         abort_unless(user()?->can(SubuserPermission::StartupDockerImage, $server), 403);
+                        abort_unless(in_array($state, $server->egg->docker_images, true), 422);
                         $original = $server->image;
                         $server->forceFill(['image' => $state])->saveOrFail();
 
@@ -136,7 +146,8 @@ class Startup extends ServerFormPage
      */
     protected function variableSections(): array
     {
-        $groups = $this->getRecord()->eggVariables()
+        $groups = EggVariable::query()
+            ->where('egg_id', $this->getRecord()->egg_id)
             ->where('user_viewable', true)
             ->orderBy('sort')
             ->get()
@@ -160,8 +171,6 @@ class Startup extends ServerFormPage
         ];
     }
 
-    private bool $variablesChecked = false;
-
     /**
      * The server's settings, or only those of the given egg variables.
      *
@@ -171,13 +180,9 @@ class Startup extends ServerFormPage
     {
         return Repeater::make($name)
             ->hiddenLabel()
-            ->relationship('serverVariables', function (Builder $query, Server $server) use ($variableIds) {
-                if (!$this->variablesChecked) {
-                    $server->ensureVariablesExist();
-                    $this->variablesChecked = true;
-                }
-
-                $query->where('egg_variables.user_viewable', true);
+            ->relationship('serverVariables', function (Builder $query) use ($variableIds) {
+                // mount() has already made sure every variable has its row (upstream, rc.3).
+                $query->with('variable')->where('egg_variables.user_viewable', true);
 
                 if ($variableIds !== null) {
                     $query->whereIn('server_variables.variable_id', $variableIds);

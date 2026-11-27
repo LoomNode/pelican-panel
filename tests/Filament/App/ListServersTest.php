@@ -4,12 +4,31 @@ use App\Enums\CustomizationKey;
 use App\Enums\SubuserPermission;
 use App\Filament\App\Resources\Servers\Pages\ListServers;
 use Filament\Facades\Filament;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 
 use function Pest\Livewire\livewire;
 
 beforeEach(function () {
     Filament::setCurrentPanel('app');
+});
+
+it('asks an unreachable node only once while rendering the server list', function () {
+    [$user, $first] = generateTestAccount();
+    $user->setCustomization(CustomizationKey::DashboardLayout, 'table');
+    foreach (range(1, 2) as $ignored) {
+        createServerModel(['user_id' => $user->id, 'node_id' => $first->node_id]);
+    }
+    Http::fake(['*' => Http::failedConnection()]);
+
+    $this->actingAs($user);
+
+    // The list layout shows each server's condition and CPU, memory and disk usage.
+    livewire(ListServers::class)->assertSuccessful();
+
+    // One request for all three servers. The node's system information is fetched once per node anyway.
+    $serverRequests = Http::recorded(fn ($request) => str_contains($request->url(), '/api/servers/'));
+    expect($serverRequests)->toHaveCount(1);
 });
 
 it('persists a valid per-page selection to the user customization', function () {
@@ -161,4 +180,49 @@ it('logs power activity so server webhooks fire', function () {
         ->assertSuccessful();
 
     $this->assertActivityFor('server:power.stop', $user, $server);
+});
+
+it('hides the server tabs when the user has no access to others\' servers', function (?string $tab) {
+    [$user, $server] = generateTestAccount();
+
+    $this->actingAs($user);
+
+    livewire(ListServers::class, ['activeTab' => $tab])
+        ->assertDontSee(trans('server/dashboard.tabs.other'))
+        ->assertCanSeeTableRecords([$server]);
+})->with([null, 'other', 'all']);
+
+it('shows the server tabs when the user is a subuser on another server', function () {
+    [$user] = generateTestAccount([SubuserPermission::ControlStart]);
+
+    $this->actingAs($user);
+
+    livewire(ListServers::class)
+        ->assertSee(trans('server/dashboard.tabs.other'));
+});
+
+it('does not query per row in the list layout', function () {
+    Http::fake(['*' => Http::response(['state' => 'running', 'utilization' => []])]);
+
+    [$user] = generateTestAccount();
+    $user->setCustomization(CustomizationKey::DashboardLayout, 'table');
+
+    $this->actingAs($user);
+
+    $count = function () {
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        livewire(ListServers::class)->assertSuccessful();
+
+        return count(DB::getQueryLog());
+    };
+
+    $count(); // Warm the permission and settings caches.
+    $baseline = $count();
+
+    foreach (range(1, 9) as $ignored) {
+        createServerModel(['owner_id' => $user->id]);
+    }
+
+    expect($count())->toBe($baseline);
 });

@@ -4,10 +4,14 @@ namespace App\Http\Controllers\Api\Remote\Servers;
 
 use App\Exceptions\Http\HttpForbiddenException;
 use App\Http\Controllers\Controller;
+use App\Jobs\AdvanceServerTransferBatch;
 use App\Models\Allocation;
 use App\Models\Node;
 use App\Models\Server;
+use App\Models\ServerTransfer;
+use App\Models\ServerTransferBatchItem;
 use App\Repositories\Daemon\DaemonServerRepository;
+use App\Services\Servers\ServerTransferBatchService;
 use Illuminate\Database\ConnectionInterface;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\JsonResponse;
@@ -25,6 +29,7 @@ class ServerTransferController extends Controller
     public function __construct(
         private ConnectionInterface $connection,
         private DaemonServerRepository $daemonServerRepository,
+        private ServerTransferBatchService $batchService,
     ) {}
 
     /**
@@ -44,14 +49,9 @@ class ServerTransferController extends Controller
         // can tell the panel that it was successful.
         throw_if(!$node->is($transfer->newNode) && !$node->is($transfer->oldNode), new HttpForbiddenException('Requesting node does not have permission to access this server.'));
 
-        $this->connection->transaction(function () use ($transfer) {
-            $transfer->forceFill(['successful' => false])->saveOrFail();
+        $transfer->markFailed();
 
-            if ($transfer->new_allocation || $transfer->new_additional_allocations) {
-                $allocations = array_merge([$transfer->new_allocation], $transfer->new_additional_allocations);
-                Allocation::query()->whereIn('id', $allocations)->update(Allocation::RELEASE_ATTRIBUTES);
-            }
-        });
+        $this->wakeBatch($transfer);
 
         return new JsonResponse([], Response::HTTP_NO_CONTENT);
     }
@@ -88,6 +88,22 @@ class ServerTransferController extends Controller
             $data['node_id'] = $transfer->new_node;
             $server->update($data);
 
+            // The node's own backups sent with the transfer are now on the new node. The old
+            // node deletes the rest with the server, like a batch transfer that leaves them.
+            // Backups held by another node are not touched by either.
+            foreach ($this->batchService->localBackups($server) as $backup) {
+                // A listed backup held by another node was not sent by the old node.
+                if ($backup->node_id !== null && $backup->node_id !== $transfer->old_node) {
+                    continue;
+                }
+
+                if (in_array($backup->uuid, $transfer->backup_uuids ?? [], true)) {
+                    $backup->update(['node_id' => $transfer->new_node]);
+                } else {
+                    $backup->delete();
+                }
+            }
+
             $server = $server->fresh();
             $server->transfer->update(['successful' => true]);
 
@@ -102,9 +118,23 @@ class ServerTransferController extends Controller
                 ->setNode($transfer->oldNode)
                 ->delete();
         } catch (ConnectionException $exception) {
-            logger()->warning($exception, ['transfer_id' => $server->transfer->id]);
+            logger()->warning($exception, ['transfer_id' => $transfer->id]);
         }
 
+        $this->wakeBatch($transfer);
+
         return new JsonResponse([], Response::HTTP_NO_CONTENT);
+    }
+
+    /**
+     * If the transfer is part of a batch, the batch can now continue with its next server.
+     */
+    private function wakeBatch(ServerTransfer $transfer): void
+    {
+        $item = ServerTransferBatchItem::query()->where('server_transfer_id', $transfer->id)->first();
+
+        if ($item) {
+            AdvanceServerTransferBatch::dispatch($item->batch);
+        }
     }
 }

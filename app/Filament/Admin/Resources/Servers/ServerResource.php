@@ -5,6 +5,7 @@ namespace App\Filament\Admin\Resources\Servers;
 use App\Enums\CustomizationKey;
 use App\Enums\SuspendAction;
 use App\Enums\TablerIcon;
+use App\Exceptions\Service\Server\TransferUnconfirmedException;
 use App\Extensions\BackupAdapter\BackupAdapterService;
 use App\Extensions\BackupAdapter\Schemas\WingsBackupSchema;
 use App\Filament\Admin\Resources\Servers\Pages\CreateServer;
@@ -12,6 +13,7 @@ use App\Filament\Admin\Resources\Servers\Pages\EditServer;
 use App\Filament\Admin\Resources\Servers\Pages\ListServers;
 use App\Filament\Admin\Resources\Servers\Pages\ViewServer;
 use App\Filament\Admin\Resources\Servers\RelationManagers\AllocationsRelationManager;
+use App\Filament\Admin\Resources\Servers\RelationManagers\BackupsRelationManager;
 use App\Filament\Admin\Resources\Servers\RelationManagers\DatabasesRelationManager;
 use App\Filament\Components\Actions\DeleteIcon;
 use App\Filament\Components\Actions\PreviewStartupAction;
@@ -140,6 +142,7 @@ class ServerResource extends Resource
         return [
             AllocationsRelationManager::class,
             DatabasesRelationManager::class,
+            BackupsRelationManager::class,
         ];
     }
 
@@ -239,10 +242,13 @@ class ServerResource extends Resource
                             ToggleButtons::make('condition')
                                 ->label(trans('admin/server.server_status'))
                                 ->formatStateUsing(fn (Server $server) => $server->condition)
-                                ->options(fn ($state) => [$state->value => $state->getLabel()])
-                                ->colors(fn ($state) => [$state->value => $state->getColor()])
-                                ->icons(fn ($state) => [$state->value => $state->getIcon()])
+                                ->options(fn (Server $server) => [$server->condition->value => $server->condition->getLabel()])
+                                ->colors(fn (Server $server) => [$server->condition->value => $server->condition->getColor()])
+                                ->icons(fn (Server $server) => [$server->condition->value => $server->condition->getIcon()])
                                 ->stateCast(new ServerConditionStateCast())
+                                ->dehydrated(false)
+                                ->required()
+                                ->markAsRequired(false)
                                 ->columnSpan([
                                     'default' => 2,
                                     'sm' => 1,
@@ -250,7 +256,7 @@ class ServerResource extends Resource
                                     'lg' => 1,
                                 ])
                                 ->hintAction(
-                                    Action::make('view_install_log')
+                                    Action::make('exclude_view_install_log')
                                         ->label(trans('admin/server.view_install_log'))
                                         //->visible(fn (Server $server) => $server->isFailedInstall())
                                         ->modalHeading('')
@@ -351,6 +357,7 @@ class ServerResource extends Resource
                                         ->afterStateUpdated(fn (Set $set) => $set('cpu', 0))
                                         ->formatStateUsing(fn (Get $get) => $get('cpu') == 0)
                                         ->live()
+                                        ->required()
                                         ->stateCast(new BooleanStateCast(false, true))
                                         ->options([
                                             1 => trans('admin/server.unlimited'),
@@ -383,6 +390,7 @@ class ServerResource extends Resource
                                         ->afterStateUpdated(fn (Set $set) => $set('memory', 0))
                                         ->formatStateUsing(fn (Get $get) => $get('memory') == 0)
                                         ->live()
+                                        ->required()
                                         ->stateCast(new BooleanStateCast(false, true))
                                         ->options([
                                             1 => trans('admin/server.unlimited'),
@@ -414,6 +422,7 @@ class ServerResource extends Resource
                                         ->dehydrated()
                                         ->label(trans('admin/server.disk'))->inlineLabel()->inline()
                                         ->live()
+                                        ->required()
                                         ->afterStateUpdated(fn (Set $set) => $set('disk', 0))
                                         ->formatStateUsing(fn (Get $get) => $get('disk') == 0)
                                         ->stateCast(new BooleanStateCast(false, true))
@@ -462,6 +471,7 @@ class ServerResource extends Resource
                                                 ->afterStateUpdated(fn (Set $set) => $set('threads', []))
                                                 ->formatStateUsing(fn (Get $get) => filled($get('threads')))
                                                 ->live()
+                                                ->required()
                                                 ->stateCast(new BooleanStateCast(false, true))
                                                 ->options([
                                                     0 => trans('admin/server.disabled'),
@@ -487,6 +497,7 @@ class ServerResource extends Resource
                                         ->live()
                                         ->label(trans('admin/server.swap'))->inlineLabel()->inline()
                                         ->columnSpan(2)
+                                        ->required()
                                         ->afterStateUpdated(function ($state, Set $set) {
                                             $value = match ($state) {
                                                 'unlimited' => -1,
@@ -545,6 +556,7 @@ class ServerResource extends Resource
                                         ->inlineLabel()
                                         ->inline()
                                         ->columnSpan(2)
+                                        ->required()
                                         ->stateCast(new BooleanStateCast(false, true))
                                         ->options([
                                             0 => trans('admin/server.disabled'),
@@ -772,7 +784,7 @@ class ServerResource extends Resource
                                 $server->ensureVariablesExist();
                             }
 
-                            return $query->orderByPowerJoins('variable.sort');
+                            return $query->with('variable')->orderByPowerJoins('variable.sort');
                         })
                         ->grid()
                         ->mutateRelationshipDataBeforeSaveUsing(function (array $data): array {
@@ -929,7 +941,7 @@ class ServerResource extends Resource
                                                     $selectedBackupUuids = Arr::get($data, 'backups', []);
                                                     $transfer->handle($server, Arr::get($data, 'node_id'), Arr::get($data, 'allocation_id'), Arr::get($data, 'allocation_additional', []), $selectedBackupUuids);
 
-                                                    $server->backups
+                                                    $server->loadMissing('backups.backupHost')->backups
                                                         ->whereNotIn('uuid', $selectedBackupUuids)
                                                         ->each(function ($backup) use ($backupService) {
                                                             $schema = $backupService->get($backup->backupHost->schema);
@@ -943,6 +955,12 @@ class ServerResource extends Resource
                                                     Notification::make()
                                                         ->title(trans('admin/server.notifications.transfer_started'))
                                                         ->success()
+                                                        ->send();
+                                                } catch (TransferUnconfirmedException $exception) {
+                                                    Notification::make()
+                                                        ->title(trans('admin/server.notifications.transfer_unconfirmed'))
+                                                        ->body($exception->getMessage())
+                                                        ->warning()
                                                         ->send();
                                                 } catch (Exception $exception) {
                                                     Notification::make()
@@ -1035,13 +1053,13 @@ class ServerResource extends Resource
                     CheckboxList::make('backups')
                         ->label(trans('admin/server.backups'))
                         ->bulkToggleable()
-                        ->options(fn (Server $server) => $server->backups->filter(fn ($backup) => $backupService->get($backup->backupHost->schema) instanceof WingsBackupSchema)->mapWithKeys(fn ($backup) => [$backup->uuid => $backup->name]))
-                        ->columns(fn (Server $record) => (int) ceil($record->backups->filter(fn ($backup) => $backupService->get($backup->backupHost->schema) instanceof WingsBackupSchema)->count() / 4)),
+                        ->options(fn (Server $server) => $server->loadMissing('backups.backupHost')->backups->filter(fn ($backup) => $backupService->get($backup->backupHost->schema) instanceof WingsBackupSchema)->mapWithKeys(fn ($backup) => [$backup->uuid => $backup->name]))
+                        ->columns(fn (Server $record) => (int) ceil($record->loadMissing('backups.backupHost')->backups->filter(fn ($backup) => $backupService->get($backup->backupHost->schema) instanceof WingsBackupSchema)->count() / 4)),
                     Text::make('backup_helper')
                         ->columnSpanFull()
                         ->content(trans('admin/server.warning_backups')),
                 ])
-                ->hidden(fn (Server $server, BackupAdapterService $backupService) => $server->backups->filter(fn ($backup) => $backupService->get($backup->backupHost->schema) instanceof WingsBackupSchema)->count() === 0),
+                ->hidden(fn (Server $server, BackupAdapterService $backupService) => $server->loadMissing('backups.backupHost')->backups->filter(fn ($backup) => $backupService->get($backup->backupHost->schema) instanceof WingsBackupSchema)->count() === 0),
         ];
     }
 }

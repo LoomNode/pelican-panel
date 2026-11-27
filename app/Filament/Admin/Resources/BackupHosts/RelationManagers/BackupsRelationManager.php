@@ -11,6 +11,7 @@ use Filament\Resources\RelationManagers\RelationManager;
 use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Builder;
 
 class BackupsRelationManager extends RelationManager
 {
@@ -21,10 +22,14 @@ class BackupsRelationManager extends RelationManager
         return $table
             ->recordTitleAttribute('name')
             ->heading(null)
+            ->modifyQueryUsing(fn (Builder $query) => $query->with(['server.node']))
             ->columns([
+                // Backups kept after their server was deleted have no server to link to.
                 TextColumn::make('server.name')
                     ->label(trans('admin/server.name'))
-                    ->url(fn (Backup $backup) => user()?->can('update', $backup->server) ? EditServer::getUrl(['record' => $backup->server]) : null)
+                    ->state(fn (Backup $backup) => $backup->serverDisplayName())
+                    ->color(fn (Backup $backup) => $backup->isOrphaned() ? 'gray' : null)
+                    ->url(fn (Backup $backup) => $backup->server && user()?->can('update', $backup->server) ? EditServer::getUrl(['record' => $backup->server]) : null)
                     ->searchable(),
                 TextColumn::make('name')
                     ->label(trans('server/backup.actions.create.name'))

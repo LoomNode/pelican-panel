@@ -1,5 +1,6 @@
 <?php
 
+use App\Enums\ContainerStatus;
 use App\Enums\SubuserPermission;
 use App\Filament\Server\Pages\DstMods;
 use App\Filament\Server\Pages\Mods;
@@ -67,6 +68,7 @@ function dstStarted(array $mods = [], string $collection = '', string $state = '
     test()->mock(DaemonServerRepository::class, function ($mock) use ($state) {
         $mock->shouldReceive('setServer')->andReturnSelf();
         $mock->shouldReceive('getDetails')->andReturn(['state' => $state]);
+        $mock->shouldReceive('getState')->andReturn(ContainerStatus::tryFrom($state));
     });
 }
 
@@ -366,6 +368,7 @@ it('restarts a running server and starts a stopped one', function (string $state
     $this->mock(DaemonServerRepository::class, function ($mock) use ($state, $power) {
         $mock->shouldReceive('setServer')->andReturnSelf();
         $mock->shouldReceive('getDetails')->andReturn(['state' => $state]);
+        $mock->shouldReceive('getState')->andReturn(ContainerStatus::tryFrom($state));
         $mock->shouldReceive('power')->once()->with($power);
     });
     $this->actingAs($user);
@@ -484,6 +487,7 @@ function dstGame(array $mods, string $state = 'running', ?string $file = null, b
     test()->mock(DaemonServerRepository::class, function ($mock) use ($state, $uptime) {
         $mock->shouldReceive('setServer')->andReturnSelf();
         $mock->shouldReceive('getDetails')->andReturn(['state' => $state, 'utilization' => ['uptime' => $uptime * 1000]]);
+        $mock->shouldReceive('getState')->andReturn(ContainerStatus::tryFrom($state));
     });
     // before fakeSteam(): the first match answers
     Http::fake(['*/api/servers/*/commands' => Http::response('', 204)]);
@@ -914,6 +918,7 @@ it('reads the options file from the server\'s own world folder, and not from a p
     $this->mock(DaemonServerRepository::class, function ($mock) {
         $mock->shouldReceive('setServer')->andReturnSelf();
         $mock->shouldReceive('getDetails')->andReturn(['state' => 'offline']);
+        $mock->shouldReceive('getState')->andReturn(ContainerStatus::tryFrom('offline'));
     });
     fakeSteam();
     $this->actingAs($user);

@@ -77,6 +77,7 @@ class ApiKeyResource extends Resource
     public static function defaultTable(Table $table): Table
     {
         return $table
+            ->modifyQueryUsing(fn (Builder $query) => $query->with(['user.roles']))
             ->columns([
                 TextColumn::make('key')
                     ->label(trans('admin/apikey.table.key'))
@@ -125,6 +126,7 @@ class ApiKeyResource extends Resource
                         ToggleButtons::make('permissions_all')
                             ->hiddenLabel()
                             ->inline()
+                            ->required()
                             ->options([
                                 0 => trans('admin/apikey.permissions.none'),
                                 1 => trans('admin/apikey.permissions.read'),

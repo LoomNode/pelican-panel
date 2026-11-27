@@ -21,6 +21,11 @@ return [
         'egg_index_url' => env('PANEL_EGG_INDEX_URL', 'https://raw.githubusercontent.com/pelican-eggs/pelican-eggs.github.io/refs/heads/main/content/pelican.json'),
     ],
 
+    'wings' => [
+        // Oldest Wings this Panel supports. Older nodes get a warning, nothing is blocked.
+        'min_version' => env('PANEL_WINGS_MIN_VERSION', '1.0.0'),
+    ],
+
     'client_features' => [
         'databases' => [
             'enabled' => env('PANEL_CLIENT_DATABASES_ENABLED', true),
@@ -42,6 +47,11 @@ return [
             'range_start' => env('PANEL_CLIENT_ALLOCATIONS_RANGE_START'),
             'range_end' => env('PANEL_CLIENT_ALLOCATIONS_RANGE_END'),
         ],
+    ],
+
+    'transfers' => [
+        // Minutes a batch waits on one server's transfer before failing it and moving on. 0 waits forever.
+        'batch_timeout' => env('PANEL_TRANSFER_BATCH_TIMEOUT', 1440),
     ],
 
     'files' => [
@@ -66,6 +76,8 @@ return [
         'avatar-provider' => env('FILAMENT_AVATAR_PROVIDER', 'gravatar'),
         'uploadable-avatars' => env('FILAMENT_UPLOADABLE_AVATARS', false),
         'default-navigation' => env('FILAMENT_DEFAULT_NAVIGATION', 'sidebar'),
+        'default-theme' => env('FILAMENT_DEFAULT_THEME', 'none'),
+        'force-theme' => env('FILAMENT_FORCE_THEME', false),
     ],
 
     'use_binary_prefix' => env('PANEL_USE_BINARY_PREFIX', true),
@@ -101,5 +113,10 @@ return [
         // so the Hub can serve beta builds this panel was explicitly enrolled in.
         'hub_url' => env('PANEL_PLUGIN_HUB_URL', 'https://hub.pelican.dev'),
         'hub_api_key' => env('PANEL_PLUGIN_HUB_API_KEY'),
+    ],
+
+    'update' => [
+        // Offer the one-click update on the admin dashboard. Updating with `php artisan p:update` is unaffected.
+        'dashboard_enabled' => env('PANEL_DASHBOARD_UPDATE_ENABLED', true),
     ],
 ];

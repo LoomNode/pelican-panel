@@ -2,12 +2,16 @@
 
 use App\Http\Controllers\Base\ModIconController;
 use App\Http\Controllers\Base\WorkshopIconController;
+use App\Http\Controllers\UpdateStatusController;
 use App\Http\Middleware\RedirectIfNotInstalled;
 use App\Livewire\Installer\PanelInstaller;
 use Illuminate\Support\Facades\Route;
 
 Route::get('installer', PanelInstaller::class)->name('installer')
     ->withoutMiddleware(['auth', RedirectIfNotInstalled::class]);
+
+Route::get('update/status', UpdateStatusController::class)->name('update.status')
+    ->middleware('auth');
 
 // Mod pictures for the Mods page (LoomNode): signed-in users only, pictures from Modrinth's file server only.
 Route::get('mod-icon/{project}/{file}', ModIconController::class)

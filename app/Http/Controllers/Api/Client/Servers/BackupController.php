@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api\Client\Servers;
 
 use App\Data\Api\Client\BackupData;
+use App\Enums\BackupStatus;
 use App\Enums\ServerState;
 use App\Enums\SubuserPermission;
 use App\Extensions\BackupAdapter\BackupAdapterService;
@@ -17,6 +18,7 @@ use App\Repositories\Daemon\DaemonBackupRepository;
 use App\Services\Backups\DeleteBackupService;
 use App\Services\Backups\DownloadLinkService;
 use App\Services\Backups\InitiateBackupService;
+use App\Services\Backups\ServerRestoreService;
 use Dedoc\Scramble\Attributes\Group;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Http\JsonResponse;
@@ -32,7 +34,8 @@ class BackupController extends ClientApiController
         private readonly DeleteBackupService $deleteBackupService,
         private readonly InitiateBackupService $initiateBackupService,
         private readonly DownloadLinkService $downloadLinkService,
-        private readonly BackupAdapterService $backupService
+        private readonly BackupAdapterService $backupService,
+        private readonly ServerRestoreService $restoreService,
     ) {
         parent::__construct();
     }
@@ -72,7 +75,8 @@ class BackupController extends ClientApiController
     public function store(StoreBackupRequest $request, Server $server): array
     {
         $action = $this->initiateBackupService
-            ->setIgnoredFiles(explode(PHP_EOL, $request->input('ignored') ?? ''));
+            ->setIgnoredFiles(explode(PHP_EOL, $request->input('ignored') ?? ''))
+            ->setIncludeConfig($request->boolean('include_config', true));
 
         // Only set the lock status if the user even has permission to delete backups,
         // otherwise ignore this status. This gets a little funky since it isn't clear
@@ -244,20 +248,26 @@ class BackupController extends ClientApiController
         // processing a different backup restoration request.
         throw_unless(is_null($server->status), new BadRequestHttpException('This server is not currently in a state that allows for a backup to be restored.'));
 
-        throw_if(!$backup->is_successful && is_null($backup->completed_at), new BadRequestHttpException('This backup cannot be restored at this time: not completed or failed.'));
+        throw_if($backup->status !== BackupStatus::Successful, new BadRequestHttpException('This backup cannot be restored at this time: not completed or failed.'));
 
         $log = Activity::event('server:backup.restore')
             ->subject($backup)
             ->property(['name' => $backup->name, 'truncate' => $request->input('truncate')]);
 
-        $log->transaction(function () use ($backup, $server, $request) {
-            $url = $this->downloadLinkService->handle($backup, $request->user());
+        // The node reports this restore with the backup's uuid, like a restore of the backup
+        // into a new server on the same node, so only one of them may start at a time.
+        $this->restoreService->whileRestoring($backup, function () use ($log, $backup, $server, $request) {
+            throw_if($this->restoreService->isRestoringIntoNewServer($backup, $server->node_id), new BadRequestHttpException(trans('admin/backup.restore.restoring_into_new_server')));
 
-            // Update the status right away for the server so that we know not to allow certain
-            // actions against it via the Panel API.
-            $server->update(['status' => ServerState::RestoringBackup]);
+            $log->transaction(function () use ($backup, $server, $request) {
+                $url = $this->downloadLinkService->handle($backup, $request->user());
 
-            $this->daemonRepository->setServer($server)->restore($backup, $url, $request->input('truncate'));
+                // Update the status right away for the server so that we know not to allow certain
+                // actions against it via the Panel API.
+                $server->update(['status' => ServerState::RestoringBackup]);
+
+                $this->daemonRepository->setServer($server)->restore($backup, $url, $request->input('truncate'));
+            });
         });
 
         return new JsonResponse([], JsonResponse::HTTP_NO_CONTENT);
