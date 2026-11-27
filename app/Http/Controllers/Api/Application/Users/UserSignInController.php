@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api\Application\Users;
 
 use App\Http\Controllers\Api\Application\ApplicationApiController;
 use App\Http\Requests\Api\Application\Users\ManageUserSignInRequest;
+use App\Models\Server;
 use App\Models\User;
 use App\Services\Users\SignInLinkService;
 use CBOR\Decoder;
@@ -56,7 +57,7 @@ class UserSignInController extends ApplicationApiController
         $to = '/';
         if (!empty($data['server'])) {
             $server = $user->directAccessibleServers()->where('servers.uuid_short', $data['server'])->first();
-            if (!$server) {
+            if (!$server instanceof Server) {
                 throw new UnprocessableEntityHttpException('That user has no access to that server.');
             }
             $to = '/server/' . $server->uuid_short;

@@ -146,7 +146,8 @@ class Startup extends ServerFormPage
      */
     protected function variableSections(): array
     {
-        $groups = $this->getRecord()->eggVariables()
+        $groups = EggVariable::query()
+            ->where('egg_id', $this->getRecord()->egg_id)
             ->where('user_viewable', true)
             ->orderBy('sort')
             ->get()
