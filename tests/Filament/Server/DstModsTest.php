@@ -829,6 +829,17 @@ it('never sends the command to a server that isn\'t running', function (string $
     ['starting', 'The server is still starting'],
 ]);
 
+it('says when the owner looks after mod options by hand, since the choices are then not used', function (string $own, bool $says) {
+    [$user, $server] = generateTestAccount();
+    dstOptionsServer($server, ['DST_MODS' => POSITIONS, 'DST_MODS_OWN' => $own], ['DST_MODS_OWN' => ['required', 'boolean']]);
+    dstGame([POSITIONS], 'offline', dstOptionsFile());
+    $this->actingAs($user);
+    Filament::setTenant($server);
+
+    $page = livewire(DstMods::class)->set('activeTab', 'options')->assertSee('Player Indicators');
+    $says ? $page->assertSee('so the choices here are not used') : $page->assertDontSee('so the choices here are not used');
+})->with([['1', true], ['0', false]]);
+
 it('shows a stopped server\'s options from the file its last run left, and saves them', function () {
     [$user, $server] = generateTestAccount();
     dstOptionsServer($server, ['DST_MODS' => POSITIONS . ',' . QUICK_PICK]);

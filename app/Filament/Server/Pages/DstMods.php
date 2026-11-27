@@ -194,7 +194,7 @@ class DstMods extends Page implements HasTable
 
     private function variable(string $env): ?ServerVariable
     {
-        abort_unless(in_array($env, [...self::SETTINGS, self::OPTIONS, 'DST_WORLD'], true), 403);
+        abort_unless(in_array($env, [...self::SETTINGS, self::OPTIONS, 'DST_WORLD', 'DST_MODS_OWN'], true), 403);
 
         $server = $this->getRecord();
         $server->ensureVariablesExist();
@@ -924,6 +924,10 @@ class DstMods extends Page implements HasTable
         }
 
         $components = [];
+        // The start script leaves modoverrides.lua alone while this Game Settings switch is on, so nothing chosen here is used.
+        if (in_array(strtolower(trim((string) $this->variable('DST_MODS_OWN')?->variable_value)), ['1', 'true', 'on'], true)) {
+            $components[] = Text::make('"I set up mod options myself" is on in Game Settings, so the choices here are not used. Turn it off there to use them.')->color('warning')->key('optionsOwn');
+        }
         if (!$running) {
             $components[] = Text::make('These options are from the last time the server ran.')->color('gray')->key('optionsOld');
         } elseif (!$lists['live']) {
