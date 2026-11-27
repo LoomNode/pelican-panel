@@ -2,6 +2,7 @@
 
 namespace App\Filament\Server\Pages;
 
+use App\Enums\ContainerStatus;
 use App\Enums\SubuserPermission;
 use App\Enums\TablerIcon;
 use App\Facades\Activity;
@@ -14,14 +15,21 @@ use App\Traits\Filament\CanCustomizeHeaderActions;
 use BackedEnum;
 use Filament\Actions\Action;
 use Filament\Facades\Filament;
+use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
 use Filament\Notifications\Notification;
 use Filament\Pages\Page;
+use Filament\Schemas\Components\Actions;
 use Filament\Schemas\Components\Callout;
+use Filament\Schemas\Components\Component;
 use Filament\Schemas\Components\EmbeddedTable;
+use Filament\Schemas\Components\EmptyState;
+use Filament\Schemas\Components\Group;
+use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\Tabs;
 use Filament\Schemas\Components\Tabs\Tab;
+use Filament\Schemas\Components\Text;
 use Filament\Schemas\Schema;
 use Filament\Support\ArrayRecord;
 use Filament\Support\Enums\Alignment;
@@ -39,10 +47,12 @@ use Filament\Tables\Table;
 use Illuminate\Container\Container;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Pagination\LengthAwarePaginator;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Sleep;
 use Throwable;
 
 /**
@@ -58,6 +68,10 @@ use Throwable;
  * So the search reads the public Workshop page, which carries the same answer as data; looking a mod or a
  * collection up by its ID uses Steam's keyless API. If the page ever changes shape, Browse says Steam can't be
  * reached and "Add by link or ID" still works.
+ *
+ * Options tab (2026-11-27): each mod's own options as dropdowns. The running game writes the option lists
+ * to a file when sent OPTIONS_COMMAND; the choices that differ from a mod's default are kept in the hidden
+ * setting DST_MOD_OPTIONS (format at encodeOptions()). The tab is there only when the egg has that setting.
  */
 class DstMods extends Page implements HasTable
 {
@@ -73,6 +87,21 @@ class DstMods extends Page implements HasTable
     private const SETTINGS = ['DST_MODS', 'DST_MOD_COLLECTION'];
 
     private const SETUP_FILE = 'mods/dedicated_server_mods_setup.lua';
+
+    /** The hidden setting with the mod options: not viewable or editable in Game Settings, only here. */
+    private const OPTIONS = 'DST_MOD_OPTIONS';
+
+    private const OPTIONS_FILE = 'loomnode_mod_options';
+
+    private const OPTIONS_MAX_LENGTH = 60000;
+
+    private const OPTIONS_MAX_BYTES = 2097152;
+
+    /**
+     * Sent to the running game's console: it writes every mod's name, version and option list as JSON to
+     * save/loomnode_mod_options. A fixed line; nothing from a user ever goes into it.
+     */
+    public const OPTIONS_COMMAND = 'local t={} for _,n in ipairs(KnownModIndex:GetModNames()) do local i=KnownModIndex:GetModInfo(n) if i then t[n]={name=i.name,version=i.version,options=i.configuration_options} end end local ok,s=pcall(json.encode_compliant or json.encode,t) TheSim:SetPersistentString("loomnode_mod_options",ok and s or "ERR "..tostring(s),false)';
 
     private const USER_AGENT = 'Mozilla/5.0 (compatible; mod-browser)';
 
@@ -104,6 +133,18 @@ class DstMods extends Page implements HasTable
 
     /** @var array{known: bool, mods: string[], collection: string}|null */
     private ?array $started = null;
+
+    /**
+     * The Options tab's dropdowns: m<mod ID>.o<option number> => c<choice number>.
+     *
+     * @var array<string, mixed>
+     */
+    public array $optionsData = [];
+
+    /** Which option lists the dropdowns were built from; a save against other lists is refused. */
+    public string $optionsVersion = '';
+
+    private ?bool $hasOptions = null;
 
     public static function hasDstMods(Server $server): bool
     {
@@ -153,7 +194,7 @@ class DstMods extends Page implements HasTable
 
     private function variable(string $env): ?ServerVariable
     {
-        abort_unless(in_array($env, self::SETTINGS, true), 403);
+        abort_unless(in_array($env, [...self::SETTINGS, self::OPTIONS, 'DST_WORLD'], true), 403);
 
         $server = $this->getRecord();
         $server->ensureVariablesExist();
@@ -166,10 +207,14 @@ class DstMods extends Page implements HasTable
         return $variable;
     }
 
-    /** Saves a setting the way Game Settings does: the setting's own rules, the activity log. */
+    /**
+     * Saves a setting the way Game Settings does: the setting's own rules, the activity log. It writes the
+     * server's value directly, so it also saves a setting the egg hides from Game Settings (DST_MOD_OPTIONS),
+     * behind the same permission.
+     */
     private function setVariable(string $env, string $value): bool
     {
-        abort_unless($this->canEdit(), 403);
+        abort_unless($this->canEdit() && in_array($env, [...self::SETTINGS, self::OPTIONS], true), 403);
         $variable = $this->variable($env);
         abort_unless($variable !== null, 403);
 
@@ -181,7 +226,11 @@ class DstMods extends Page implements HasTable
         $validator = Validator::make(['variable_value' => $value], ['variable_value' => $variable->variable->rules]);
         if ($validator->fails()) {
             Notification::make()
-                ->title($env === 'DST_MODS' ? 'The mod list is full' : 'That collection can\'t be saved')
+                ->title(match ($env) {
+                    'DST_MODS' => 'The mod list is full',
+                    self::OPTIONS => 'The mod options can\'t be saved',
+                    default => 'That collection can\'t be saved',
+                })
                 ->body($env === 'DST_MODS' ? 'Remove a mod first, or put your mods in a Steam Workshop collection and use the Collection tab.' : implode(', ', $validator->errors()->all()))
                 ->danger()
                 ->send();
@@ -193,12 +242,18 @@ class DstMods extends Page implements HasTable
         Activity::event('server:startup.edit')
             ->property([
                 'variable' => $env,
-                'old' => EggVariable::forActivity($env, $original),
-                'new' => EggVariable::forActivity($env, $value),
+                'old' => self::forLog(EggVariable::forActivity($env, $original)),
+                'new' => self::forLog(EggVariable::forActivity($env, $value)),
             ])
             ->log();
 
         return true;
+    }
+
+    /** The options setting can be long; the activity log keeps its start. */
+    private static function forLog(?string $value): ?string
+    {
+        return $value !== null && strlen($value) > 2000 ? substr($value, 0, 2000) . '…' : $value;
     }
 
     /** @return string[] the Workshop mods setting as a list of IDs */
@@ -250,7 +305,7 @@ class DstMods extends Page implements HasTable
         });
     }
 
-    /** @return array{add: string[], remove: string[], collection: bool} */
+    /** @return array{add: string[], remove: string[], collection: bool, options: bool} */
     private function pending(): array
     {
         $started = $this->started();
@@ -260,6 +315,7 @@ class DstMods extends Page implements HasTable
             'add' => array_values(array_diff($mods, $started['mods'])),
             'remove' => array_values(array_diff($started['mods'], $mods)),
             'collection' => $this->collection() !== $started['collection'],
+            'options' => $this->optionsPending(),
         ];
     }
 
@@ -267,7 +323,7 @@ class DstMods extends Page implements HasTable
     {
         $pending = $this->pending();
 
-        return count($pending['add']) + count($pending['remove']) + (int) $pending['collection'];
+        return count($pending['add']) + count($pending['remove']) + (int) $pending['collection'] + (int) $pending['options'];
     }
 
     private function pendingSummary(): string
@@ -277,6 +333,7 @@ class DstMods extends Page implements HasTable
             $pending['add'] !== [] ? count($pending['add']) . (count($pending['add']) === 1 ? ' mod' : ' mods') . ' to add' : null,
             $pending['remove'] !== [] ? count($pending['remove']) . ' to take out' : null,
             $pending['collection'] ? ($this->collection() === '' ? 'the collection to take out' : 'a collection to add') : null,
+            $pending['options'] ? 'mod options changed' : null,
         ]);
 
         return ucfirst(implode(', ', $parts));
@@ -289,6 +346,669 @@ class DstMods extends Page implements HasTable
         } catch (Throwable) {
             return false;
         }
+    }
+
+    private function state(): ContainerStatus
+    {
+        try {
+            return $this->getRecord()->retrieveStatus();
+        } catch (Throwable) {
+            return ContainerStatus::Missing;
+        }
+    }
+
+    /** When the server's current run began, from the node's uptime; null when it isn't up or the node can't say. */
+    private function startedAt(): ?int
+    {
+        if (!$this->state()->isStartingOrRunning()) {
+            return null;
+        }
+        $server = $this->getRecord();
+        [$measured, $uptime] = Cache::remember('loomnode:dst-uptime:' . $server->id, now()->addSeconds(15), function () use ($server) {
+            try {
+                $details = Container::getInstance()->make(DaemonServerRepository::class)->setServer($server)->getDetails();
+            } catch (Throwable) {
+                $details = [];
+            }
+
+            // uptime is in milliseconds
+            return [now()->getTimestamp(), (int) Arr::get($details, 'utilization.uptime', 0)];
+        });
+
+        return $uptime > 0 ? $measured - intdiv($uptime, 1000) : null;
+    }
+
+    // ---- Mod options: the stored setting ---------------------------------------------------------------
+
+    private function hasOptions(): bool
+    {
+        return $this->hasOptions ??= $this->getRecord()->egg->variables()->where('env_variable', self::OPTIONS)->exists();
+    }
+
+    private function storedOptions(): string
+    {
+        return $this->hasOptions() ? (string) $this->variable(self::OPTIONS)?->variable_value : '';
+    }
+
+    /**
+     * One option value as it is stored: n + a number without exponent, b1 / b0, or s + the string as hex.
+     * Null for anything that can't be stored (not a number, boolean or string; not finite; too long).
+     */
+    public static function encodeOptionValue(mixed $value): ?string
+    {
+        if (is_bool($value)) {
+            return $value ? 'b1' : 'b0';
+        }
+        if (is_string($value)) {
+            return strlen($value) <= 400 ? 's' . bin2hex($value) : null;
+        }
+        if (is_int($value)) {
+            return 'n' . $value;
+        }
+        if (!is_float($value) || !is_finite($value)) {
+            return null;
+        }
+        // the shortest text that reads back as the same number (0.05, 3.0, 1.0E-7), then the exponent written out
+        if (!preg_match('/^(-?)([0-9]+)(?:\.([0-9]+))?(?:E([+-]?[0-9]+))?$/', var_export($value, true), $m)) {
+            return null;
+        }
+        $whole = $m[2];
+        $fraction = $m[3] ?? '';
+        $exponent = (int) ($m[4] ?? 0);
+        if (abs($exponent) > 30) {
+            return null;
+        }
+        if ($exponent > 0) {
+            $fraction = str_pad($fraction, $exponent, '0');
+            $whole .= substr($fraction, 0, $exponent);
+            $fraction = substr($fraction, $exponent);
+        } elseif ($exponent < 0) {
+            $whole = str_pad($whole, 1 - $exponent, '0', STR_PAD_LEFT);
+            $fraction = substr($whole, $exponent) . $fraction;
+            $whole = substr($whole, 0, $exponent);
+        }
+        $whole = ltrim($whole, '0') ?: '0';
+        $fraction = rtrim($fraction, '0');
+        $number = $whole . ($fraction !== '' ? '.' . $fraction : '');
+
+        return 'n' . ($m[1] === '-' && $number !== '0' ? '-' : '') . $number;
+    }
+
+    /** The value a stored token stands for; null when it isn't one. */
+    public static function decodeOptionValue(string $token): int|float|bool|string|null
+    {
+        if ($token === 'b1' || $token === 'b0') {
+            return $token === 'b1';
+        }
+        if (preg_match('/^n(-?[0-9]+)(\.[0-9]+)?\z/', $token, $m)) {
+            return !isset($m[2]) && strlen($m[1]) <= 15 ? (int) $m[1] : (float) substr($token, 1);
+        }
+        if (preg_match('/^s((?:[0-9a-f]{2}){0,400})\z/', $token, $m)) {
+            return (string) hex2bin($m[1]);
+        }
+
+        return null;
+    }
+
+    /**
+     * The options setting from choices: one line, entries joined by ";", each
+     * <mod ID>:<option name as hex>:<n number | b1 | b0 | s string as hex>, sorted by mod ID, options in the
+     * order given. What can't be stored (an ID that isn't 1 to 12 digits, a name over 200 bytes, a value
+     * that isn't a number, boolean or string) is left out.
+     *
+     * @param  array<int|string, array<int|string, mixed>>  $choices  [mod ID][option name] => value
+     */
+    public static function encodeOptions(array $choices): string
+    {
+        uksort($choices, fn ($a, $b) => [strlen(ltrim((string) $a, '0')), (string) $a] <=> [strlen(ltrim((string) $b, '0')), (string) $b]);
+        $entries = [];
+        foreach ($choices as $id => $options) {
+            if (!preg_match('/^[0-9]{1,12}\z/', (string) $id) || !is_array($options)) {
+                continue;
+            }
+            foreach ($options as $name => $value) {
+                $name = (string) $name;
+                $token = self::encodeOptionValue($value);
+                if ($name !== '' && strlen($name) <= 200 && $token !== null) {
+                    $entries[] = $id . ':' . bin2hex($name) . ':' . $token;
+                }
+            }
+        }
+
+        return implode(';', $entries);
+    }
+
+    /**
+     * The options setting as choices. A value that isn't in the stored format as a whole counts as empty.
+     *
+     * @return array<string, array<string, int|float|bool|string>> [mod ID][option name] => value (PHP turns all-digit keys into integers)
+     */
+    public static function decodeOptions(?string $stored): array
+    {
+        $stored = (string) $stored;
+        if ($stored === '' || strlen($stored) > self::OPTIONS_MAX_LENGTH) {
+            return [];
+        }
+        $choices = [];
+        foreach (explode(';', $stored) as $position => $entry) {
+            if ($entry === '' && $position > 0 && $position === substr_count($stored, ';')) {
+                // one ";" at the very end is fine
+                continue;
+            }
+            $value = null;
+            if (preg_match('/^([0-9]{1,12}):((?:[0-9a-f]{2}){1,200}):(n-?[0-9]+(?:\.[0-9]+)?|b[01]|s(?:[0-9a-f]{2}){0,400})\z/', $entry, $m)) {
+                $value = self::decodeOptionValue($m[3]);
+            }
+            if ($value === null) {
+                return [];
+            }
+            $choices[$m[1]][(string) hex2bin($m[2])] = $value;
+        }
+
+        return $choices;
+    }
+
+    /** True from a saved options change until the server has started again. */
+    private function optionsPending(): bool
+    {
+        if (!$this->hasOptions()) {
+            return false;
+        }
+        $key = 'loomnode:dst-options-changed:' . $this->getRecord()->id;
+        $marker = Cache::get($key);
+        if (!is_array($marker) || !is_int($marker['at'] ?? null)) {
+            return false;
+        }
+        $startedAt = $this->startedAt();
+        if ($startedAt !== null && $startedAt > $marker['at']) {
+            Cache::forget($key);
+
+            return false;
+        }
+
+        return true;
+    }
+
+    /** Remembers that the options changed, and what they were when the server last started with them. */
+    private function markOptionsChanged(string $from, string $to): void
+    {
+        $key = 'loomnode:dst-options-changed:' . $this->getRecord()->id;
+        $marker = $this->optionsPending() ? Cache::get($key) : null;
+        $from = is_array($marker) && is_string($marker['from'] ?? null) ? $marker['from'] : $from;
+        if ($from === $to) {
+            Cache::forget($key);
+        } else {
+            Cache::forever($key, ['at' => now()->getTimestamp(), 'from' => $from]);
+        }
+    }
+
+    // ---- Mod options: what the game says each mod has --------------------------------------------------
+
+    /**
+     * The option lists from the file the game wrote ("KLEI     1 " and then JSON). Mod authors decide what
+     * is in it and the server's owner can overwrite it, so nothing in it is trusted: every type is checked,
+     * counts and lengths are capped, and what doesn't fit is left out. Null when it isn't that file at all.
+     *
+     * @return array<string, array{name: string, version: string, options: array<int, array{name: string, label: string, hover: string, default: string, choices: array<int, array{label: string, token: string}>}>}>|null by mod ID; \"default\" and \"token\" are values as stored
+     */
+    public static function parseOptionsFile(string $content): ?array
+    {
+        $start = strpos($content, '{');
+        if ($start === false || strlen($content) > self::OPTIONS_MAX_BYTES) {
+            return null;
+        }
+        try {
+            $data = json_decode(substr($content, $start), true, 16, JSON_THROW_ON_ERROR);
+        } catch (Throwable) {
+            return null;
+        }
+        if (!is_array($data)) {
+            return null;
+        }
+
+        $mods = [];
+        foreach ($data as $key => $mod) {
+            if (count($mods) >= 200) {
+                break;
+            }
+            if (!is_array($mod) || !preg_match('/^workshop-([0-9]{1,12})\z/', (string) $key, $m)) {
+                continue;
+            }
+            $id = $m[1];
+            $options = [];
+            $names = [];
+            $list = $mod['options'] ?? null;
+            foreach (is_array($list) && array_is_list($list) ? $list : [] as $option) {
+                if (count($options) >= 300) {
+                    break;
+                }
+                $name = is_array($option) ? ($option['name'] ?? null) : null;
+                $choiceList = is_array($option) ? ($option['options'] ?? null) : null;
+                $default = is_array($option) ? self::encodeOptionValue($option['default'] ?? null) : null;
+                // no name or no choices: a heading between options in the game's own screen
+                if (!is_string($name) || $name === '' || strlen($name) > 200 || isset($names[$name]) || $default === null || !is_array($choiceList) || !array_is_list($choiceList)) {
+                    continue;
+                }
+                $choices = [];
+                foreach ($choiceList as $choice) {
+                    if (count($choices) >= 200) {
+                        break;
+                    }
+                    $token = is_array($choice) ? self::encodeOptionValue($choice['data'] ?? null) : null;
+                    if ($token === null) {
+                        continue;
+                    }
+                    $label = self::cut($choice['description'] ?? null, 200);
+                    if ($label === '') {
+                        $value = self::decodeOptionValue($token);
+                        $label = is_bool($value) ? ($value ? 'Yes' : 'No') : self::cut(is_string($value) ? $value : substr($token, 1), 200);
+                    }
+                    $choices[] = ['label' => $label, 'token' => $token];
+                }
+                if ($choices === []) {
+                    continue;
+                }
+                $names[$name] = true;
+                $options[] = [
+                    'name' => $name,
+                    'label' => self::cut($option['label'] ?? null, 200) ?: self::cut($name, 200),
+                    'hover' => self::cut($option['hover'] ?? null, 500),
+                    'default' => $default,
+                    'choices' => $choices,
+                ];
+            }
+            $mods[$id] = [
+                'name' => self::cut($mod['name'] ?? null, 200) ?: 'Mod ' . $id,
+                'version' => self::cut($mod['version'] ?? null, 40),
+                'options' => $options,
+            ];
+        }
+
+        return $mods;
+    }
+
+    /** Text from the game's file as one plain line of at most $length characters; anything but text or a number is empty. */
+    private static function cut(mixed $text, int $length): string
+    {
+        if (!is_string($text) && !is_int($text) && !is_float($text)) {
+            return '';
+        }
+
+        return mb_substr(trim((string) preg_replace('/\s+/u', ' ', (string) $text)), 0, $length);
+    }
+
+    /** The world's save folder, where the game writes the file; null when the world's name isn't a plain one. */
+    private function saveFolder(): ?string
+    {
+        $world = trim((string) $this->variable('DST_WORLD')?->variable_value);
+        $world = $world === '' ? 'world' : $world;
+
+        return preg_match('/^[A-Za-z0-9_][A-Za-z0-9_-]{0,31}\z/', $world) ? '/DoNotStarveTogether/config/' . $world . '/Master/save' : null;
+    }
+
+    /** @return array<string, mixed>|null the option lists in the file on the server, whenever it was written */
+    private function readOptionsFile(): ?array
+    {
+        $folder = $this->saveFolder();
+        if ($folder === null) {
+            return null;
+        }
+        try {
+            $content = (string) Container::getInstance()->make(DaemonFileRepository::class)->setServer($this->getRecord())
+                ->getContent($folder . '/' . self::OPTIONS_FILE, self::OPTIONS_MAX_BYTES);
+        } catch (Throwable) {
+            return null;
+        }
+
+        return self::parseOptionsFile($content);
+    }
+
+    /** When and how big the file is now, to see that the game wrote it again; null when it isn't there. */
+    private function optionsFileStamp(): ?string
+    {
+        try {
+            $listing = Container::getInstance()->make(DaemonFileRepository::class)->setServer($this->getRecord())->getDirectory((string) $this->saveFolder());
+        } catch (Throwable) {
+            return null;
+        }
+        foreach ($listing as $file) {
+            if (is_array($file) && ($file['name'] ?? null) === self::OPTIONS_FILE) {
+                return json_encode([$file['modified'] ?? null, $file['size'] ?? null]) ?: null;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Has the running game write its option lists, and reads them: about 1 to 3 seconds, at most about 4.
+     * Only ever called for a server in the running state.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function askGame(): ?array
+    {
+        $server = $this->getRecord();
+        if ($this->saveFolder() === null || $this->state() !== ContainerStatus::Running) {
+            return null;
+        }
+        $before = $this->optionsFileStamp();
+        try {
+            $server->send(self::OPTIONS_COMMAND);
+        } catch (Throwable) {
+            return null;
+        }
+        for ($try = 0; $try < 8; $try++) {
+            Sleep::for(500)->milliseconds();
+            $stamp = $this->optionsFileStamp();
+            if ($stamp === null || $stamp === $before) {
+                continue;
+            }
+            $mods = $this->readOptionsFile();
+            if ($mods !== null) {
+                return $mods;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * The option lists this page works with, kept for 10 minutes: "live" when the running game wrote them
+     * for this page, not live when they are the file left from an earlier run. Null when there are none.
+     *
+     * @return array{at: int, live: bool, mods: array<string, mixed>}|null
+     */
+    private function optionLists(): ?array
+    {
+        $lists = Cache::get('loomnode:dst-options:' . $this->getRecord()->id);
+
+        return is_array($lists) && is_array($lists['mods'] ?? null) ? $lists : null;
+    }
+
+    /**
+     * Gets the option lists when the ones kept won't do. A running server is asked (again) when nothing is
+     * kept, what is kept is older than its last start or lacks a mod it started with, or on Refresh. A
+     * server that isn't running is never sent anything: the file from its last run is read as it is.
+     */
+    private function loadOptions(bool $force = false): void
+    {
+        if (!$this->hasOptions()) {
+            return;
+        }
+        $key = 'loomnode:dst-options:' . $this->getRecord()->id;
+        $lists = $this->optionLists();
+        $age = $lists === null ? 0 : now()->getTimestamp() - (int) $lists['at'];
+
+        if ($this->state() !== ContainerStatus::Running) {
+            if ($lists !== null && !$force) {
+                return;
+            }
+            $mods = $this->readOptionsFile();
+        } else {
+            $startedAt = $this->startedAt();
+            $known = $lists === null ? [] : array_map('strval', array_keys($lists['mods']));
+            $missing = array_diff(array_filter($this->started()['mods'], fn ($id) => strlen($id) <= 12), $known) !== [];
+            $current = $lists !== null && ($startedAt === null || $lists['at'] >= $startedAt);
+            $complete = $lists !== null && ($lists['live'] ?? false) && !$missing;
+            // a list that isn't live, or lacks a mod, is asked for again after a minute, not at every click
+            if (!$force && $current && ($complete || $age < 60)) {
+                return;
+            }
+            $mods = $this->askGame();
+            if ($mods !== null) {
+                Cache::put($key, ['at' => now()->getTimestamp(), 'live' => true, 'mods' => $mods], now()->addMinutes(10));
+
+                return;
+            }
+            $mods = $this->readOptionsFile();
+        }
+
+        if ($mods === null) {
+            Cache::forget($key);
+        } else {
+            Cache::put($key, ['at' => now()->getTimestamp(), 'live' => false, 'mods' => $mods], now()->addMinutes(10));
+        }
+    }
+
+    /** @return string[]|null every mod the server has: its list and its collection; null when Steam can't say what the collection holds */
+    private function serverMods(): ?array
+    {
+        $mods = $this->currentMods();
+        if ($this->collection() !== '') {
+            $inCollection = self::steamCollection($this->collection());
+            if ($inCollection === null) {
+                return null;
+            }
+            $mods = [...$mods, ...$inCollection];
+        }
+
+        return array_values(array_unique($mods));
+    }
+
+    /**
+     * The mods that get a section: on the server, known to the game, with at least one option.
+     *
+     * @param  array<int|string, mixed>  $mods  the option lists
+     * @return array<string, array<string, mixed>> by "m<ID>"
+     */
+    private function modsWithOptions(array $mods): array
+    {
+        $shown = [];
+        foreach ($this->serverMods() ?? $this->currentMods() as $id) {
+            if (isset($mods[$id]) && $mods[$id]['options'] !== []) {
+                $shown['m' . $id] = $mods[$id];
+            }
+        }
+
+        return $shown;
+    }
+
+    /** Sets the dropdowns: the saved choice, else the mod's default. */
+    private function fillOptions(): void
+    {
+        $lists = $this->optionLists();
+        $stored = self::decodeOptions($this->storedOptions());
+        $state = [];
+        foreach ($this->modsWithOptions($lists['mods'] ?? []) as $key => $mod) {
+            foreach ($mod['options'] as $number => $option) {
+                $saved = $stored[substr($key, 1)][$option['name']] ?? null;
+                $tokens = array_column($option['choices'], 'token');
+                $at = $saved === null ? false : array_search(self::encodeOptionValue($saved), $tokens, true);
+                $at = $at === false ? array_search($option['default'], $tokens, true) : $at;
+                $state[$key]['o' . $number] = $at === false ? null : 'c' . $at;
+            }
+        }
+        $this->optionsData = $state;
+        $this->optionsVersion = $lists === null ? '' : md5(serialize($lists['mods']));
+    }
+
+    /**
+     * Saves the dropdowns: only choices that differ from a mod's default, and only a choice the mod offers.
+     * What is stored for a mod whose options aren't known right now stays as it is; what is stored for a mod
+     * the server no longer has goes.
+     */
+    protected function saveOptions(): void
+    {
+        abort_unless($this->canEdit() && $this->hasOptions(), 403);
+        $this->loadOptions();
+        $lists = $this->optionLists();
+        if ($lists === null) {
+            Notification::make()->title('The mods\' options aren\'t known right now')->body('Nothing was saved. Start the server, then press Refresh.')->danger()->send();
+
+            return;
+        }
+        if (md5(serialize($lists['mods'])) !== $this->optionsVersion) {
+            $this->fillOptions();
+            Notification::make()->title('The mods\' options changed')->body('Nothing was saved. Check your choices and save again.')->warning()->send();
+
+            return;
+        }
+
+        $original = $this->storedOptions();
+        $stored = self::decodeOptions($original);
+        $onServer = $this->serverMods();
+        $shown = $this->modsWithOptions($lists['mods']);
+        $choices = [];
+        foreach ($stored as $id => $options) {
+            if (!isset($shown['m' . $id]) && ($onServer === null || in_array((string) $id, $onServer, true))) {
+                $choices[$id] = $options;
+            }
+        }
+        foreach ($shown as $key => $mod) {
+            $id = substr($key, 1);
+            foreach ($mod['options'] as $number => $option) {
+                $picked = $this->optionsData[$key]['o' . $number] ?? null;
+                $choice = is_string($picked) && preg_match('/^c([0-9]{1,3})\z/', $picked, $m) ? ($option['choices'][(int) $m[1]] ?? null) : null;
+                if ($choice !== null) {
+                    if ($choice['token'] !== $option['default']) {
+                        $choices[$id][$option['name']] = self::decodeOptionValue($choice['token']);
+                    }
+                } elseif ($picked !== null && $picked !== '' && isset($stored[$id][$option['name']])) {
+                    // not one of this option's choices: ignored, what was saved stays
+                    $choices[$id][$option['name']] = $stored[$id][$option['name']];
+                }
+            }
+        }
+
+        $value = self::encodeOptions($choices);
+        if (strlen($value) > self::OPTIONS_MAX_LENGTH) {
+            Notification::make()->title('Too many options to save')->body('Nothing was saved. Put some options back to their default: only changed ones take room.')->danger()->send();
+
+            return;
+        }
+        if (!$this->setVariable(self::OPTIONS, $value)) {
+            return;
+        }
+        $this->fillOptions();
+        if ($value === $original) {
+            Notification::make()->title('Nothing to save')->body('The options are as they were.')->success()->send();
+
+            return;
+        }
+        $this->markOptionsChanged($original, $value);
+        Notification::make()->title('Mod options saved')->body('They load at the next restart.')->success()->send();
+    }
+
+    /** Takes a removed mod's choices out of the options setting, unless the collection still brings the mod. */
+    private function dropOptions(string $id): void
+    {
+        if (!$this->hasOptions() || in_array($id, $this->collection() === '' ? [] : (self::steamCollection($this->collection()) ?? [$id]), true)) {
+            return;
+        }
+        $stored = self::decodeOptions($this->storedOptions());
+        if (isset($stored[$id])) {
+            unset($stored[$id]);
+            $this->setVariable(self::OPTIONS, self::encodeOptions($stored));
+        }
+    }
+
+    /**
+     * The Options tab: a note or two, one fold-out section per mod, Save.
+     *
+     * @return array<Component>
+     */
+    private function optionsComponents(): array
+    {
+        $lists = $this->optionLists();
+        $state = $this->state();
+        $running = $state === ContainerStatus::Running;
+        if ($lists === null) {
+            [$heading, $description] = match (true) {
+                $running => ['The game didn\'t answer', 'Its mods\' options couldn\'t be read. Give it a moment if it has just started, then press Refresh.'],
+                $state->isStartingOrRunning() => ['The server is still starting', 'Its mods\' options show here once it is up. Press Refresh then.'],
+                default => ['Start the server to see its mods\' options', 'The game lists them once it runs with the mods.'],
+            };
+
+            return [EmptyState::make($heading)->description($description)->icon(TablerIcon::Adjustments)->key('optionsEmpty')->footer([$this->refreshOptionsAction()])];
+        }
+
+        $components = [];
+        if (!$running) {
+            $components[] = Text::make('These options are from the last time the server ran.')->color('gray')->key('optionsOld');
+        } elseif (!$lists['live']) {
+            $components[] = Text::make('The game didn\'t answer just now, so these options are from an earlier run. Press Refresh to ask again.')->color('gray')->key('optionsOld');
+        }
+        $waiting = array_slice(array_values(array_filter($this->currentMods(), fn ($id) => !isset($lists['mods'][$id]))), 0, 20);
+        $titles = $waiting === [] ? [] : (self::steamDetails($waiting) ?? []);
+        foreach ($waiting as $id) {
+            $title = mb_substr(trim((string) ($titles[$id]['title'] ?? '')), 0, 80) ?: $id;
+            $components[] = Text::make($title . ': ' . ($state->isOffline() ? 'start' : 'restart') . ' the server once so it downloads; its options show here after that.')
+                ->color('gray')
+                ->key('optionsWaiting' . $id);
+        }
+
+        $shown = $this->modsWithOptions($lists['mods']);
+        if ($shown === []) {
+            $components[] = EmptyState::make($waiting !== [] ? 'Restart the server once so the new mods load; their options show here after that' : 'None of this server\'s mods have options')
+                ->description($waiting !== [] ? null : 'A mod with options gets a section here.')
+                ->icon(TablerIcon::Adjustments)
+                ->key('optionsEmpty')
+                ->footer([$this->refreshOptionsAction()]);
+
+            return $components;
+        }
+
+        $canEdit = $this->canEdit();
+        $first = true;
+        foreach ($shown as $key => $mod) {
+            $fields = [];
+            foreach ($mod['options'] as $number => $option) {
+                $choices = [];
+                $hasDefault = false;
+                foreach ($option['choices'] as $at => $choice) {
+                    $isDefault = !$hasDefault && $choice['token'] === $option['default'];
+                    $hasDefault = $hasDefault || $isDefault;
+                    $choices['c' . $at] = $choice['label'] . ($isDefault ? ' (default)' : '');
+                }
+                $fields[] = Select::make($key . '.o' . $number)
+                    ->label($option['label'])
+                    ->options($choices)
+                    // the browser's own dropdown: a page can hold a few hundred of these
+                    ->native()
+                    ->helperText($option['hover'] !== '' ? $option['hover'] : null)
+                    ->placeholder('The mod\'s own default')
+                    ->selectablePlaceholder(!$hasDefault)
+                    ->disabled(!$canEdit);
+            }
+            $components[] = Section::make($mod['name'])
+                ->description(count($fields) === 1 ? '1 option' : count($fields) . ' options')
+                ->key('options' . $key)
+                ->collapsible()
+                ->collapsed(!$first)
+                ->columns(['default' => 1, 'md' => 2])
+                ->schema($fields);
+            $first = false;
+        }
+        $components[] = Actions::make([$this->saveOptionsAction(), $this->refreshOptionsAction()])->key('optionsActions');
+
+        return $components;
+    }
+
+    public function saveOptionsAction(): Action
+    {
+        return Action::make('saveOptions')
+            ->label('Save')
+            ->icon(TablerIcon::DeviceFloppy)
+            ->button()
+            ->visible(fn () => $this->canEdit() && $this->hasOptions())
+            ->action(fn () => $this->saveOptions());
+    }
+
+    public function refreshOptionsAction(): Action
+    {
+        return Action::make('refreshOptions')
+            ->label('Refresh')
+            ->icon(TablerIcon::Refresh)
+            ->button()
+            ->outlined()
+            ->color('gray')
+            ->visible(fn () => $this->hasOptions())
+            ->action(function () {
+                abort_unless($this->hasOptions(), 403);
+                $this->loadOptions(true);
+                $this->fillOptions();
+            });
     }
 
     // ---- Steam -------------------------------------------------------------------------------------------
@@ -422,7 +1142,9 @@ class DstMods extends Page implements HasTable
                 ->description('The game downloads its mods at every start, so a change here needs a restart and nothing else. '
                     . '"Sent to players" mods reach everyone who joins by themselves; "Server only" mods need nothing from players. '
                     . 'Mods made only for a player\'s own game aren\'t listed: they do nothing on a server. '
-                    . 'Every mod runs with its normal options; to set options yourself, see "Mods: I set up mod options myself" in Game Settings.')
+                    . ($this->hasOptions()
+                        ? 'A mod\'s own options are on the Options tab once the server has started with it.'
+                        : 'Every mod runs with its normal options; to set options yourself, see "Mods: I set up mod options myself" in Game Settings.'))
                 ->info()
                 ->key('about')
                 ->actions([$this->addByLinkAction()]),
@@ -442,6 +1164,7 @@ class DstMods extends Page implements HasTable
                     'browse' => Tab::make('browse')->label('Browse')->icon(TablerIcon::Search),
                     'yours' => Tab::make('yours')->label('Your mods')->icon(TablerIcon::Puzzle)->badge(fn () => count($this->currentMods()) ?: null),
                     'collection' => Tab::make('collection')->label('Collection')->icon(TablerIcon::Package),
+                    'options' => Tab::make('options')->label('Options')->icon(TablerIcon::Adjustments)->visible(fn () => $this->hasOptions()),
                 ]),
             Callout::make(fn () => $this->collectionHeading())
                 ->description(fn () => $this->collection() === ''
@@ -452,7 +1175,11 @@ class DstMods extends Page implements HasTable
                 ->key('collection')
                 ->actions([$this->collectionLinkAction(), $this->removeCollectionAction()])
                 ->visible(fn () => $this->activeTab === 'collection'),
-            EmbeddedTable::make(),
+            Group::make(fn () => $this->optionsComponents())
+                ->key('modOptions')
+                ->statePath('optionsData')
+                ->visible(fn () => $this->activeTab === 'options' && $this->hasOptions()),
+            EmbeddedTable::make()->visible(fn () => $this->activeTab !== 'options'),
         ]);
     }
 
@@ -469,6 +1196,14 @@ class DstMods extends Page implements HasTable
 
     public function updatedActiveTab(): void
     {
+        if ($this->activeTab === 'options') {
+            if ($this->hasOptions()) {
+                $this->loadOptions();
+                $this->fillOptions();
+            } else {
+                $this->activeTab = 'browse';
+            }
+        }
         $this->resetPage();
         $this->resetTableSearch();
         $this->flushCachedTableRecords();
@@ -857,6 +1592,7 @@ class DstMods extends Page implements HasTable
         abort_unless($this->canEdit(), 403);
         $mods = array_values(array_filter($this->currentMods(), fn ($entry) => $entry !== $id));
         if ($this->setVariable('DST_MODS', implode(',', $mods))) {
+            $this->dropOptions($id);
             $this->flushCachedTableRecords();
             Notification::make()->title($title . ' removed')->body('It stops at the next restart. What it added to the world may go with it.')->success()->send();
         }
@@ -982,6 +1718,7 @@ class DstMods extends Page implements HasTable
                     return;
                 }
                 Cache::forget('loomnode:dst-started:' . $server->id);
+                Cache::forget('loomnode:dst-uptime:' . $server->id);
                 Notification::make()->title($running ? 'Restarting' : 'Starting')->body('The mods download now. This page catches up once the server has started.')->success()->send();
                 $this->redirect(Console::getUrl(), navigate: true);
             });
