@@ -689,7 +689,8 @@ class DstMods extends Page implements HasTable
     private function askGame(): ?array
     {
         $server = $this->getRecord();
-        if ($this->saveFolder() === null || $this->state() !== ContainerStatus::Running) {
+        // Only for someone who can change the settings (Kyle 2026-11-27): a look-only user never sends the game anything.
+        if (!$this->canEdit() || $this->saveFolder() === null || $this->state() !== ContainerStatus::Running) {
             return null;
         }
         $before = $this->optionsFileStamp();
@@ -915,6 +916,7 @@ class DstMods extends Page implements HasTable
         $running = $state === ContainerStatus::Running;
         if ($lists === null) {
             [$heading, $description] = match (true) {
+                $running && !$this->canEdit() => ['The mods\' options haven\'t been read yet', 'They show here once someone who can change this server\'s settings has opened this tab.'],
                 $running => ['The game didn\'t answer', 'Its mods\' options couldn\'t be read. Give it a moment if it has just started, then press Refresh.'],
                 $state->isStartingOrRunning() => ['The server is still starting', 'Its mods\' options show here once it is up. Press Refresh then.'],
                 default => ['Start the server to see its mods\' options', 'The game lists them once it runs with the mods.'],
@@ -930,6 +932,8 @@ class DstMods extends Page implements HasTable
         }
         if (!$running) {
             $components[] = Text::make('These options are from the last time the server ran.')->color('gray')->key('optionsOld');
+        } elseif (!$lists['live'] && !$this->canEdit()) {
+            $components[] = Text::make('These options are from the last time they were read.')->color('gray')->key('optionsOld');
         } elseif (!$lists['live']) {
             $components[] = Text::make('The game didn\'t answer just now, so these options are from an earlier run. Press Refresh to ask again.')->color('gray')->key('optionsOld');
         }
